@@ -323,6 +323,44 @@ test('failed START_CAPTURE rolls back media, overlay, storage, and public status
   );
 });
 
+test('Deepgram credential is returned only to the active offscreen session and is never persisted', async () => {
+  const harness = loadWorker();
+  await harness.ready();
+  const sessionId = 'session_capture_credential';
+  await startSession(harness, sessionId);
+
+  const startMessage = harness.state.runtimeMessages.find(message => message.type === 'START_CAPTURE');
+  assert.ok(startMessage);
+  assert.equal(Object.hasOwn(startMessage, 'deepgramKey'), false);
+
+  const credential = await harness.message({
+    type: 'GET_CAPTURE_CREDENTIAL',
+    sessionId,
+  }, offscreenSender());
+  assert.equal(credential.ok, true);
+  assert.equal(credential.sessionId, sessionId);
+  assert.equal(credential.deepgramKey, 'deepgram-test-key');
+
+  const untrusted = await harness.message({
+    type: 'GET_CAPTURE_CREDENTIAL',
+    sessionId,
+  }, activeTabSender());
+  assert.equal(untrusted.ok, false);
+  assert.equal(untrusted.code, 'UNTRUSTED_CREDENTIAL_REQUEST');
+
+  const stale = await harness.message({
+    type: 'GET_CAPTURE_CREDENTIAL',
+    sessionId: 'different_session',
+  }, offscreenSender());
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'STALE_SESSION');
+
+  const persisted = JSON.stringify(harness.state.sessionStorage);
+  assert.equal(persisted.includes('deepgram-test-key'), false);
+  assert.equal(persisted.includes('anthropic-test-key'), false);
+  assert.equal(persisted.includes('serper-test-key'), false);
+});
+
 test('STOP aborts provider work immediately, ignores tail audio for analysis, and cleans up', async () => {
   const stopGate = deferred();
   const fetchCalls = [];

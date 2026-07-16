@@ -15,6 +15,8 @@ sequenceDiagram
   Popup->>Worker: START_FACTCHECK
   Worker->>Page: PING preflight
   Worker->>Offscreen: streamId + sessionId + transcription config
+  Offscreen->>Worker: authenticated credential request(sessionId)
+  Worker-->>Offscreen: Deepgram key for matching active session
   Offscreen->>Providers: tab audio to Deepgram
   Providers-->>Offscreen: final transcript + timing/confidence
   Offscreen-->>Worker: TRANSCRIPT_RESULT(sessionId)
@@ -32,7 +34,7 @@ sequenceDiagram
 
 - **Popup:** provider configuration, language, Efficient/Balanced routing, Anthropic session budget, consent, URL readiness, and user controls. It never sends keys through the page.
 - **Service worker:** authoritative session state, transcript sequencing, claim extraction, retrieval, validation, and routing.
-- **Offscreen document:** tab audio stream and Deepgram WebSocket. It has no claim or verdict logic.
+- **Offscreen document:** tab audio stream and Deepgram WebSocket. Chrome exposes only `chrome.runtime` in this context, so it requests its credential from the worker after sender/session validation and never reads extension storage. It has no claim or verdict logic.
 - **Content overlay:** display and local report export inside a closed Shadow DOM. It never receives provider credentials, and reports itself unhealthy if its stylesheet, host visibility, or DOM attachment is compromised.
 
 ## Safety invariants
@@ -51,6 +53,7 @@ sequenceDiagram
 12. A hidden, detached, or unresponsive overlay is fatal to capture; both the content script and worker watchdog request teardown.
 13. Haiku handles every high-volume extraction request; Sonnet is used only for evidence verification in the user-selected Balanced profile.
 14. Provider-reported token usage is accumulated per stage. Reaching the configured Anthropic cost estimate pauses new AI/search work without hiding or stopping the live transcript.
+15. Provider keys never enter content-tab messages or persisted session state. The offscreen document receives only its Deepgram credential in a direct response bound to the active session.
 
 ## Adaptive analysis pipeline
 

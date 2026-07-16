@@ -8,25 +8,39 @@ const offscreenSource = await readFile(
   'utf8'
 );
 
-function loadOffscreen({ storageGet = async () => ({ deepgramKey: 'test-key' }) } = {}) {
+function loadOffscreen({
+  runtimeSend,
+  getUserMedia,
+} = {}) {
   const messages = [];
-  const sandbox = {
-    chrome: {
-      runtime: {
-        onMessage: { addListener() {} },
-        sendMessage(message) {
-          messages.push(message);
-          return Promise.resolve({ ok: true });
-        },
+  const chrome = {
+    runtime: {
+      onMessage: { addListener() {} },
+      sendMessage(message) {
+        messages.push(message);
+        if (runtimeSend) return Promise.resolve(runtimeSend(message));
+        if (message.type === 'GET_CAPTURE_CREDENTIAL') {
+          return Promise.resolve({
+            ok: true,
+            sessionId: message.sessionId,
+            deepgramKey: 'test-key',
+          });
+        }
+        return Promise.resolve({ ok: true });
       },
-      storage: { local: { get: storageGet } },
     },
+  };
+
+  const sandbox = {
+    chrome,
     console: { error() {}, warn() {}, log() {} },
     crypto: globalThis.crypto,
     URLSearchParams,
+    WebSocket: { OPEN: 1, CLOSED: 3 },
     setTimeout,
     clearTimeout,
   };
+  if (getUserMedia) sandbox.navigator = { mediaDevices: { getUserMedia } };
   vm.createContext(sandbox);
   vm.runInContext(offscreenSource, sandbox, { filename: 'offscreen-ex.js' });
   return { sandbox, messages };
@@ -36,17 +50,43 @@ function evaluate(harness, source) {
   return vm.runInContext(source, harness.sandbox);
 }
 
-test('STOP_CAPTURE cancels a start waiting on local storage', async () => {
-  let resolveStorage;
-  const storageResult = new Promise(resolve => { resolveStorage = resolve; });
-  const harness = loadOffscreen({ storageGet: () => storageResult });
+test('offscreen startup does not depend on the unavailable chrome.storage API', async () => {
+  let mediaRequests = 0;
+  const harness = loadOffscreen({
+    async getUserMedia() {
+      mediaRequests++;
+      throw new Error('test reached tab media acquisition');
+    },
+  });
+
+  const error = await evaluate(
+    harness,
+    "startCapture({ streamId: 'stream-1', language: 'en', sessionId: 'session_no_storage' })"
+  ).then(() => null, reason => reason);
+
+  assert.equal(evaluate(harness, "typeof chrome.storage"), 'undefined');
+  assert.equal(harness.messages[0]?.type, 'GET_CAPTURE_CREDENTIAL');
+  assert.equal(harness.messages[0]?.sessionId, 'session_no_storage');
+  assert.equal(mediaRequests, 1, 'startup tried to read chrome.storage before acquiring tab audio');
+  assert.equal(error?.code, 'TAB_AUDIO_UNAVAILABLE');
+  assert.equal(error?.message, 'Unable to capture audio from this tab.');
+});
+
+test('STOP_CAPTURE cancels a start waiting on the credential response', async () => {
+  let resolveCredential;
+  const credentialResult = new Promise(resolve => { resolveCredential = resolve; });
+  const harness = loadOffscreen({ runtimeSend: () => credentialResult });
 
   const starting = evaluate(
     harness,
     "startCapture({ streamId: 'stream-1', language: 'en', sessionId: 'session_1234' })"
   );
   const stopped = await evaluate(harness, "stopCapture('session_1234')");
-  resolveStorage({ deepgramKey: 'test-key' });
+  resolveCredential({
+    ok: true,
+    sessionId: 'session_1234',
+    deepgramKey: 'test-key',
+  });
 
   assert.equal(stopped.state, 'idle');
   assert.equal(stopped.cancelledPendingStart, true);
@@ -54,9 +94,9 @@ test('STOP_CAPTURE cancels a start waiting on local storage', async () => {
 });
 
 test('stopping a pending replacement does not stop the existing session', async () => {
-  let resolveStorage;
-  const storageResult = new Promise(resolve => { resolveStorage = resolve; });
-  const harness = loadOffscreen({ storageGet: () => storageResult });
+  let resolveCredential;
+  const credentialResult = new Promise(resolve => { resolveCredential = resolve; });
+  const harness = loadOffscreen({ runtimeSend: () => credentialResult });
   evaluate(harness, `
     currentCapture = {
       sessionId: 'existing_session',
@@ -71,7 +111,11 @@ test('stopping a pending replacement does not stop the existing session', async 
     "startCapture({ streamId: 'stream-2', language: 'en', sessionId: 'replacement_session' })"
   );
   const stopped = await evaluate(harness, "stopCapture('replacement_session')");
-  resolveStorage({ deepgramKey: 'test-key' });
+  resolveCredential({
+    ok: true,
+    sessionId: 'replacement_session',
+    deepgramKey: 'test-key',
+  });
 
   assert.equal(stopped.cancelledPendingStart, true);
   assert.equal(stopped.activeSessionId, 'existing_session');

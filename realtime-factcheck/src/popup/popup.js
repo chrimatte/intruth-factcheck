@@ -402,7 +402,19 @@ async function startFactChecking() {
       type: 'START_FACTCHECK',
       sessionId: requestedSessionId,
     });
-    if (!response?.ok) throw new Error(getResponseError(response, 'The session could not start.'));
+    if (!response?.ok) {
+      // START_FACTCHECK error responses are sent only after the background has
+      // completed rollback. Keep the conservative Retry stop state only for a
+      // transport failure where Chrome did not return an authoritative result.
+      transitionTo(UI_STATES.ERROR, {
+        errorMessage: getResponseError(response, 'The session could not start.'),
+        captureMayBeActive: false,
+        sessionId: null,
+        sessionTabId: null,
+      });
+      elements.errorNotice.focus();
+      return;
+    }
 
     transitionTo(UI_STATES.LISTENING, {
       sessionId: response.sessionId || requestedSessionId,

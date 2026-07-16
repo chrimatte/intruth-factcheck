@@ -2,7 +2,14 @@
 
 All notable changes are documented here. This project uses semantic versions for the checked-in extension.
 
-## [2.0.0] - Unreleased
+## [2.0.1] - Unreleased
+
+### Fixed
+
+- Offscreen audio capture now obtains the Deepgram credential through an authenticated service-worker response instead of calling the unavailable `chrome.storage` API.
+- Failed startup responses no longer leave the popup in a misleading `Retry stop` state after rollback has completed.
+
+## [2.0.0] - 2026-07-16
 
 ### Added
 

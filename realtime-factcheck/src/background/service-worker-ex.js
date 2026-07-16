@@ -309,7 +309,7 @@ storageAccessReady.catch(error => console.error('[service-worker] storage lockdo
 async function loadConfig() {
   await storageAccessReady;
   const data = await chrome.storage.local.get(STORAGE_KEYS);
-  const deepgramKeyPresent = Boolean(safeText(data.deepgramKey, 500));
+  const deepgramKey = safeText(data.deepgramKey, 500);
   const analysisMode = Object.hasOwn(ANALYSIS_MODES, data.analysisMode)
     ? data.analysisMode
     : DEFAULT_ANALYSIS_MODE;
@@ -319,6 +319,7 @@ async function loadConfig() {
     : DEFAULT_SESSION_BUDGET_USD;
   const config = {
     anthropicKey: safeText(data.anthropicKey, 500),
+    deepgramKey,
     serperKey: safeText(data.serperKey, 500),
     language: SUPPORTED_TRANSCRIPT_LANGUAGES.has(data.transcriptLanguage)
       ? data.transcriptLanguage
@@ -342,7 +343,7 @@ async function loadConfig() {
 
   const missing = [];
   if (!config.anthropicKey) missing.push('Anthropic');
-  if (!deepgramKeyPresent) missing.push('Deepgram');
+  if (!config.deepgramKey) missing.push('Deepgram');
   if (!config.serperKey) missing.push('Serper');
   if (missing.length) {
     throw new PipelineError(
@@ -1962,6 +1963,31 @@ async function handleRuntimeMessage(message, sender) {
         tabId: activeSession?.tabId || null,
         metrics: activeSession ? publicSessionMetrics(activeSession) : null,
       };
+
+    case 'GET_CAPTURE_CREDENTIAL': {
+      const session = activeSession;
+      if (!session || !isOffscreenSender(sender)) {
+        throw new PipelineError(
+          'UNTRUSTED_CREDENTIAL_REQUEST',
+          'Rejected transcription credential request from an untrusted context.'
+        );
+      }
+      if (
+        message.sessionId !== session.id ||
+        !isSessionCurrent(session) ||
+        !['STARTING', 'ACTIVE'].includes(session.phase)
+      ) {
+        throw new PipelineError(
+          'STALE_SESSION',
+          'Rejected transcription credential request from a stale session.'
+        );
+      }
+      const deepgramKey = safeText(session.config?.deepgramKey, 500);
+      if (!deepgramKey) {
+        throw new PipelineError('DEEPGRAM_KEY_MISSING', 'Enter a Deepgram API key before starting.');
+      }
+      return { ok: true, sessionId: session.id, deepgramKey };
+    }
 
     case 'TRANSCRIPT_RESULT':
       return { ok: true, ...(await handleTranscriptMessage(message, sender)) };

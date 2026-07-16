@@ -208,24 +208,38 @@ async function startCapture(message) {
   let context = null;
 
   try {
-    // The offscreen document is a trusted extension context. Read the
-    // credential here instead of broadcasting it in START_CAPTURE.
-    let storedConfig;
-    try {
-      storedConfig = await chrome.storage.local.get(['deepgramKey']);
-    } catch (error) {
-      throw new CaptureError(
-        'CONFIG_READ_FAILED',
-        error instanceof Error ? error.message : 'Unable to read the local Deepgram configuration.',
-        true
-      );
-    }
+    // Chrome exposes only chrome.runtime to offscreen documents. Request the
+    // credential directly from the service worker, which authenticates this
+    // document and the active session before replying to this sender only.
+    const credentialResponse = await chrome.runtime.sendMessage({
+      type: 'GET_CAPTURE_CREDENTIAL',
+      sessionId,
+    });
     if (revision !== lifecycleRevision) {
       throw new CaptureError('START_CANCELLED', 'Capture start was superseded or stopped.', false);
     }
 
-    const deepgramKey = typeof storedConfig.deepgramKey === 'string'
-      ? storedConfig.deepgramKey.trim()
+    if (!credentialResponse?.ok) {
+      throw new CaptureError(
+        typeof credentialResponse?.code === 'string'
+          ? credentialResponse.code
+          : 'CONFIG_READ_FAILED',
+        typeof credentialResponse?.error === 'string' && credentialResponse.error.trim()
+          ? credentialResponse.error.trim()
+          : 'Unable to read the Deepgram configuration.',
+        false
+      );
+    }
+    if (credentialResponse.sessionId !== sessionId) {
+      throw new CaptureError(
+        'SESSION_MISMATCH',
+        'The transcription credential belongs to a stale session.',
+        false
+      );
+    }
+
+    const deepgramKey = typeof credentialResponse.deepgramKey === 'string'
+      ? credentialResponse.deepgramKey.trim()
       : '';
     if (!deepgramKey) {
       throw new CaptureError('DEEPGRAM_KEY_MISSING', 'Enter a Deepgram API key before starting.', false);
