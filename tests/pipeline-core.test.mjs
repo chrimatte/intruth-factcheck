@@ -42,9 +42,18 @@ test("safeText trims and bounds untrusted strings", () => {
 
 test("Unicode tokenization preserves non-Latin claims", () => {
   assert.deepEqual(tokenizeUnicode("الاقتصاد نما ٣٪"), ["الاقتصاد", "نما", "٣"]);
-  assert.deepEqual(tokenizeUnicode("通胀率为4%"), ["通胀率为4"]);
+  assert.deepEqual(tokenizeUnicode("通胀率为4%"), ["通", "胀", "率", "为", "4"]);
+  assert.deepEqual(tokenizeUnicode("L'Italia è cresciuta del 4,2%"), [
+    "l", "italia", "è", "cresciuta", "del", "4", "2"
+  ]);
   assert.notEqual(normalizeClaimKey("Экономика выросла"), "");
   assert.notEqual(normalizeClaimKey("失業率は4%です"), "");
+});
+
+test("transcript quotes tolerate surface-only casing, spacing, and punctuation variants", () => {
+  const transcript = "L'economia italiana — secondo l'ISTAT — è cresciuta.";
+  assert.equal(isExactTranscriptQuote("l’economia   italiana - secondo l’ISTAT", transcript), true);
+  assert.equal(isExactTranscriptQuote("l'economia francese", transcript), false);
 });
 
 test("claim keys preserve material negation and numbers", () => {
@@ -63,6 +72,7 @@ test("claim extraction rejects invented entities, qualifiers, numbers, and negat
   assert.equal(isExactTranscriptQuote("rate fell by 4 percent", quote), true);
   assert.equal(claimIsExtractiveFromQuotes("The rate fell by 4 percent last year", quote), true);
   assert.equal(claimIsExtractiveFromQuotes("The rate fell by 4 percent last year in Italy", quote), false);
+  assert.equal(claimIsExtractiveFromQuotes("No, the rate fell by 4 percent last year", quote), false);
   assert.equal(claimQuotePreservesInvariants("The rate fell by 40 percent", quote), false);
   assert.equal(
     claimQuotePreservesInvariants("The rate cannot fall by 4 percent last year", "The rate can fall by 4 percent last year"),
@@ -70,19 +80,59 @@ test("claim extraction rejects invented entities, qualifiers, numbers, and negat
   );
 });
 
+test("claim extraction accepts Italian clitic and articulated-preposition edits only", () => {
+  const quote = "In Italia il tasso di occupazione è aumentato.";
+  assert.equal(
+    claimIsExtractiveFromQuotes("L'occupazione in Italia è aumentata", quote),
+    false,
+    "a changed material predicate remains non-extractive"
+  );
+  assert.equal(
+    claimIsExtractiveFromQuotes("Il tasso dell'occupazione in Italia è aumentato", quote),
+    true,
+    "articles and articulated prepositions may be minimally edited"
+  );
+  assert.equal(
+    claimIsExtractiveFromQuotes("Il tasso dell'occupazione in Francia è aumentato", quote),
+    false,
+    "a new entity remains material"
+  );
+});
+
+test("repeated supporting quotes do not duplicate numeric or negation invariants", () => {
+  const claim = "Nel 2025 il tasso non ha superato il 4,2 per cento.";
+  const repeatedQuotes = [
+    "Nel 2025 il tasso non ha superato il 4,2 per cento.",
+    "Il tasso non ha superato il 4,2 per cento nel 2025."
+  ].join(" ");
+  assert.equal(claimQuotePreservesInvariants(claim, repeatedQuotes), true);
+  assert.equal(
+    claimQuotePreservesInvariants("Il tasso non ha superato il 4,2 per cento.", repeatedQuotes),
+    false,
+    "omitting a unique year still fails closed"
+  );
+  assert.equal(
+    claimQuotePreservesInvariants("Nel 2025 il tasso ha superato il 4,2 per cento.", repeatedQuotes),
+    false,
+    "dropping negation still fails closed"
+  );
+});
+
 test("ASR confidence fails closed and uses a stricter threshold for sensitive claims", () => {
-  assert.deepEqual(assessAsrConfidence("The policy changed", [0.8]), {
-    asrConfidence: 0.8,
-    threshold: 0.72,
+  assert.deepEqual(assessAsrConfidence("The policy changed", [0.7]), {
+    asrConfidence: 0.7,
+    threshold: 0.68,
     sensitive: false,
     sufficient: true
   });
   assert.deepEqual(assessAsrConfidence("The rate was 4 percent", [0.8]), {
     asrConfidence: 0.8,
-    threshold: 0.84,
+    threshold: 0.78,
     sensitive: true,
-    sufficient: false
+    sufficient: true
   });
+  assert.equal(assessAsrConfidence("The policy changed", [0.67]).sufficient, false);
+  assert.equal(assessAsrConfidence("The rate was 4 percent", [0.77]).sufficient, false);
   assert.equal(assessAsrConfidence("The policy changed", []).sufficient, false);
 });
 
@@ -102,6 +152,16 @@ test("Sonnet 5 forced-tool requests disable thinking and omit sampling parameter
   assert.equal("temperature" in body, false);
   assert.equal("top_p" in body, false);
   assert.equal("top_k" in body, false);
+
+  const haikuBody = buildAnthropicToolRequest({
+    model: "claude-haiku-4-5-20251001",
+    maxTokens: 400,
+    system: "Return structured data.",
+    payload: { claim: "Example" },
+    toolName: "emit_result",
+    schema: { type: "object" }
+  });
+  assert.equal("thinking" in haikuBody, false);
 });
 
 test("source normalization rejects unsafe URLs and blocked subdomains", () => {

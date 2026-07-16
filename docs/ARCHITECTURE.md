@@ -18,7 +18,9 @@ sequenceDiagram
   Offscreen->>Providers: tab audio to Deepgram
   Providers-->>Offscreen: final transcript + timing/confidence
   Offscreen-->>Worker: TRANSCRIPT_RESULT(sessionId)
-  Worker->>Providers: extract claim, retrieve evidence, evaluate
+  Worker->>Providers: Haiku extracts candidate claims
+  Worker->>Providers: Serper retrieves evidence
+  Worker->>Providers: Haiku or Sonnet evaluates evidence
   Worker-->>Page: claim/update(sessionId, claimId)
   User->>Popup: Stop
   Popup->>Worker: STOP_FACTCHECK
@@ -28,7 +30,7 @@ sequenceDiagram
 
 ## Context ownership
 
-- **Popup:** provider configuration, consent, URL readiness, and user controls. It never sends keys through the page.
+- **Popup:** provider configuration, language, Efficient/Balanced routing, Anthropic session budget, consent, URL readiness, and user controls. It never sends keys through the page.
 - **Service worker:** authoritative session state, transcript sequencing, claim extraction, retrieval, validation, and routing.
 - **Offscreen document:** tab audio stream and Deepgram WebSocket. It has no claim or verdict logic.
 - **Content overlay:** display and local report export inside a closed Shadow DOM. It never receives provider credentials, and reports itself unhealthy if its stylesheet, host visibility, or DOM attachment is compromised.
@@ -47,6 +49,16 @@ sequenceDiagram
 10. Delivery markers are informational experiments and never feed the factual verdict.
 11. Clicking stop disables new Anthropic and Serper work before the transcription tail is drained for display.
 12. A hidden, detached, or unresponsive overlay is fatal to capture; both the content script and worker watchdog request teardown.
+13. Haiku handles every high-volume extraction request; Sonnet is used only for evidence verification in the user-selected Balanced profile.
+14. Provider-reported token usage is accumulated per stage. Reaching the configured Anthropic cost estimate pauses new AI/search work without hiding or stopping the live transcript.
+
+## Adaptive analysis pipeline
+
+Final transcript fragments are buffered until six utterances, about 60 Unicode tokens, or an idle deadline. Very small conversational fragments wait for a bounded 12-second maximum instead of causing a paid request after every pause or speaker turn. Each extraction receives at most four preceding context utterances and never receives the full list of claims already emitted; invariant-aware Unicode deduplication stays local for the whole session.
+
+Efficient mode routes extraction and grounded evaluation to pinned Claude Haiku 4.5. Balanced mode still extracts with Haiku but routes only evidence-bearing claims to Claude Sonnet 5. Low-ASR claims and claims with no usable search evidence become `UNVERIFIABLE` without a verdict-model call. Anthropic network timeouts are not retried automatically because a timed-out request may already have been accepted and billed.
+
+The worker records provider-reported input, output, cache-write, and cache-read token categories. It estimates cost using prices versioned with the extension and exposes both the estimate and raw counters to the overlay. The number is a safety control, not an invoice; provider dashboards are authoritative.
 
 ## Extension lifecycle
 

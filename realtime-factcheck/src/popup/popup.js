@@ -15,6 +15,8 @@ const STORAGE_KEYS = [
   'deepgramKey',
   'serperKey',
   'transcriptLanguage',
+  'analysisMode',
+  'sessionBudgetUsd',
   'privacyConsent',
   'privacyConsentVersion',
 ];
@@ -32,6 +34,8 @@ const elements = {
   serperKey: document.getElementById('serperKey'),
   language: document.getElementById('languageSelect'),
   languageCode: document.getElementById('languageCode'),
+  analysisMode: document.getElementById('analysisMode'),
+  sessionBudget: document.getElementById('sessionBudgetUsd'),
   consent: document.getElementById('privacyConsent'),
 };
 
@@ -113,6 +117,22 @@ elements.language.addEventListener('change', async () => {
   }
 });
 
+elements.analysisMode.addEventListener('change', async () => {
+  try {
+    await storageSet({ analysisMode: elements.analysisMode.value });
+  } catch (error) {
+    showNonCaptureError(error.message);
+  }
+});
+
+elements.sessionBudget.addEventListener('change', async () => {
+  try {
+    await storageSet({ sessionBudgetUsd: Number(elements.sessionBudget.value) });
+  } catch (error) {
+    showNonCaptureError(error.message);
+  }
+});
+
 elements.consent.addEventListener('change', async () => {
   elements.consent.removeAttribute('aria-invalid');
   try {
@@ -161,7 +181,14 @@ async function initialize() {
   elements.serperKey.value = stored.serperKey || '';
   elements.language.value = isKnownLanguage(stored.transcriptLanguage)
     ? stored.transcriptLanguage
-    : 'en';
+    : 'multi';
+  elements.analysisMode.value = stored.analysisMode === 'balanced'
+    ? 'balanced'
+    : 'efficient';
+  const storedBudget = Number(stored.sessionBudgetUsd);
+  elements.sessionBudget.value = [0, 0.25, 0.5, 1].includes(storedBudget)
+    ? String(storedBudget)
+    : '0.5';
   elements.consent.checked = stored.privacyConsent === true
     && stored.privacyConsentVersion === PRIVACY_NOTICE_VERSION;
 
@@ -206,7 +233,9 @@ function isKnownLanguage(language) {
 }
 
 function updateLanguageCode() {
-  elements.languageCode.textContent = elements.language.value.toUpperCase();
+  elements.languageCode.textContent = elements.language.value === 'multi'
+    ? 'AUTO'
+    : elements.language.value.toUpperCase();
 }
 
 function isSupportedUrl(rawUrl) {
@@ -228,6 +257,8 @@ function getConfiguration() {
     deepgramKey: elements.deepgramKey.value.trim(),
     serperKey: elements.serperKey.value.trim(),
     transcriptLanguage: elements.language.value,
+    analysisMode: elements.analysisMode.value,
+    sessionBudgetUsd: Number(elements.sessionBudget.value),
     privacyConsent: elements.consent.checked,
     privacyConsentVersion: elements.consent.checked ? PRIVACY_NOTICE_VERSION : '',
   };

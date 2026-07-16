@@ -25,8 +25,11 @@
     '아니', '않', '없',
     'değil', 'yok', 'asla',
   ]);
-  const ASR_CONFIDENCE_THRESHOLD = 0.72;
-  const ASR_SENSITIVE_CONFIDENCE_THRESHOLD = 0.84;
+  // Deepgram confidence is an ASR ranking signal, not a calibrated probability.
+  // Keep a stricter gate for numbers and negation, without discarding otherwise
+  // usable utterances merely because they contain a year or percentage.
+  const ASR_CONFIDENCE_THRESHOLD = 0.68;
+  const ASR_SENSITIVE_CONFIDENCE_THRESHOLD = 0.78;
   const COMMON_SECOND_LEVEL_SUFFIXES = new Set([
     'ac.uk', 'co.uk', 'gov.uk', 'org.uk',
     'asn.au', 'com.au', 'edu.au', 'gov.au', 'net.au', 'org.au',
@@ -41,29 +44,63 @@
     'a', 'an', 'the', 'and', 'or', 'but', 'as', 'at', 'by', 'for', 'from',
     'in', 'into', 'of', 'on', 'to', 'with', 'is', 'are', 'was', 'were', 'be',
     'been', 'being', 'that', 'this', 'these', 'those', 'it', 'its',
-    'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una', 'e', 'o', 'è',
-    'era', 'sono', 'di', 'da', 'a', 'in', 'su', 'per', 'con', 'che',
+    'il', 'lo', 'la', 'l', 'i', 'gli', 'le', 'un', 'uno', 'una', 'e', 'o', 'è',
+    'era', 'sono', 'di', 'd', 'da', 'a', 'in', 'su', 'per', 'con', 'che',
+    'al', 'allo', 'alla', 'ai', 'agli', 'alle', 'dal', 'dallo', 'dalla', 'dai',
+    'dagli', 'dalle', 'dall', 'del', 'dello', 'della', 'dei', 'degli', 'delle',
+    'dell', 'nel', 'nello', 'nella', 'nei', 'negli', 'nelle', 'nell', 'sul',
+    'sullo', 'sulla', 'sui', 'sugli', 'sulle', 'sull', 'all', 'col', 'coi',
     'el', 'los', 'las', 'una', 'unos', 'unas', 'y', 'o', 'es', 'son', 'era',
-    'de', 'del', 'en', 'por', 'para', 'con', 'que',
+    'de', 'del', 'al', 'en', 'por', 'para', 'con', 'que',
     'le', 'la', 'les', 'un', 'une', 'des', 'et', 'ou', 'est', 'sont', 'était',
-    'de', 'du', 'dans', 'sur', 'pour', 'avec', 'que',
+    'de', 'd', 'du', 'au', 'aux', 'dans', 'sur', 'pour', 'avec', 'que',
     'der', 'die', 'das', 'ein', 'eine', 'und', 'oder', 'ist', 'sind', 'war',
     'von', 'im', 'in', 'auf', 'für', 'mit', 'dass',
     'o', 'a', 'os', 'as', 'um', 'uma', 'e', 'ou', 'é', 'são', 'era', 'de',
-    'do', 'da', 'em', 'por', 'para', 'com', 'que',
+    'do', 'da', 'dos', 'das', 'ao', 'aos', 'à', 'às', 'em', 'no', 'na',
+    'nos', 'nas', 'por', 'para', 'com', 'que',
+    // Other languages exposed by the extension. These are function words only;
+    // entities, predicates, qualifiers, numbers, and negation remain material.
+    'het', 'een', 'en', 'of', 'is', 'zijn', 'was', 'van', 'voor', 'dat',
+    'i', 'lub', 'albo', 'jest', 'są', 'był', 'była', 'było', 'z', 'w',
+    'na', 'do', 'od', 'dla', 'że',
+    'ett', 'och', 'eller', 'är', 'var', 'av', 'på', 'för', 'med', 'att',
+    'bir', 've', 'veya', 'ile', 'için', 'bu', 'şu', 'o',
+    'и', 'или', 'это', 'был', 'была', 'было', 'в', 'на', 'из', 'для', 'что',
+    'و', 'أو', 'في', 'من', 'إلى', 'على', 'لـ', 'هذا', 'هذه',
+    'और', 'या', 'है', 'हैं', 'था', 'थी', 'में', 'से', 'को', 'के', 'की',
+    '的', '了', '是', '在', '和', '与', '與', '为', '為',
+    'は', 'が', 'の', 'を', 'に', 'で', 'と', 'です', 'ます',
   ]);
   const ENGLISH_NEGATION_CONTRACTION = /\b(?:cannot|can't|cant|won't|wont|don't|dont|doesn't|doesnt|didn't|didnt|isn't|isnt|aren't|arent|wasn't|wasnt|weren't|werent|haven't|havent|hasn't|hasnt|hadn't|hadnt|shouldn't|shouldnt|wouldn't|wouldnt|couldn't|couldnt|mustn't|mustnt)\b/giu;
   const PERCENT_WORD_PATTERN = '(?:%|percent(?:age)?|per\\s+cento|por\\s+ciento|pour\\s+cent|prozent|por\\s+cento|процент(?:а|ов)?|प्रतिशत)';
+  const WORD_PART_PATTERN = /[\p{L}\p{M}]+|\p{N}+/gu;
+  const WORD_SEGMENTER = typeof Intl === 'object' && typeof Intl.Segmenter === 'function'
+    ? new Intl.Segmenter('und', { granularity: 'word' })
+    : null;
 
   function safeText(value, maxLength = 2000) {
     return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
   }
 
   function tokenizeUnicode(text) {
-    return String(text || '')
+    const normalized = String(text || '')
       .normalize('NFKC')
-      .toLocaleLowerCase()
-      .match(/[\p{L}\p{N}]+/gu) || [];
+      .toLowerCase();
+    if (!normalized) return [];
+
+    // Intl.Segmenter prevents an entire punctuation-free CJK utterance from
+    // becoming one indivisible token. Splitting each segment into letter and
+    // number runs also treats apostrophe clitics and adjacent digits uniformly.
+    if (WORD_SEGMENTER) {
+      const tokens = [];
+      for (const segment of WORD_SEGMENTER.segment(normalized)) {
+        if (!segment.isWordLike) continue;
+        tokens.push(...(segment.segment.match(WORD_PART_PATTERN) || []));
+      }
+      return tokens;
+    }
+    return normalized.match(WORD_PART_PATTERN) || [];
   }
 
   function normalizeClaimKey(claim) {
@@ -75,12 +112,21 @@
       .normalize('NFKC')
       .replace(/\s+/g, ' ')
       .trim()
-      .toLocaleLowerCase();
+      .toLowerCase();
   }
 
   function isExactTranscriptQuote(quote, sentenceText) {
-    const normalizedQuote = String(quote || '').normalize('NFKC').trim();
-    const normalizedSentence = String(sentenceText || '').normalize('NFKC');
+    const normalizeSurface = value => String(value || '')
+      .normalize('NFKC')
+      .replace(/[\u2018\u2019\u201A\u201B\u2032\uFF07]/gu, "'")
+      .replace(/[\u201C\u201D\u201E\u201F\u2033\uFF02]/gu, '"')
+      .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/gu, '-')
+      .replace(/\u2026/gu, '...')
+      .replace(/\s+/gu, ' ')
+      .trim()
+      .toLowerCase();
+    const normalizedQuote = normalizeSurface(quote);
+    const normalizedSentence = normalizeSurface(sentenceText);
     return Boolean(normalizedQuote && normalizedSentence.includes(normalizedQuote));
   }
 
@@ -112,17 +158,29 @@
   function claimQuotePreservesInvariants(claim, quoteText) {
     const claimNumbers = extractNumericInvariants(claim);
     const quoteNumbers = extractNumericInvariants(quoteText);
+    // Supporting quotes may repeat the same fact. Compare unique values so two
+    // corroborating quotes containing "4.2%" do not invalidate one atomic claim,
+    // while an added or omitted year/quantity still fails closed.
+    const claimNumberSet = new Set(claimNumbers);
+    const quoteNumberSet = new Set(quoteNumbers);
     if (
-      claimNumbers.length !== quoteNumbers.length ||
-      claimNumbers.some((value, index) => value !== quoteNumbers[index])
+      claimNumberSet.size !== quoteNumberSet.size ||
+      [...claimNumberSet].some(value => !quoteNumberSet.has(value))
     ) return false;
-    return countNegationInvariants(claim) === countNegationInvariants(quoteText);
+
+    // Repeated supporting quotes likewise repeat grammatical negation. Presence
+    // must match in both directions, but its duplicate count is not semantic.
+    return (countNegationInvariants(claim) > 0) ===
+      (countNegationInvariants(quoteText) > 0);
   }
 
   function claimIsExtractiveFromQuotes(claim, quoteText) {
     const quoteTokens = new Set(tokenizeUnicode(quoteText));
     const materialClaimTokens = tokenizeUnicode(claim)
-      .filter(token => !EXTRACTION_STOPWORDS.has(token));
+      // Some spellings are ambiguous across languages (for example Portuguese
+      // "no" is a contraction while English/Spanish "no" is negation). A known
+      // negation token is always material regardless of the stop-word table.
+      .filter(token => NEGATION_TOKENS.has(token) || !EXTRACTION_STOPWORDS.has(token));
     if (!materialClaimTokens.length || !quoteTokens.size) return false;
     return materialClaimTokens.every(token => quoteTokens.has(token));
   }
@@ -176,12 +234,9 @@
     toolName,
     schema,
   }) {
-    return {
+    const request = {
       model,
       max_tokens: maxTokens,
-      // Sonnet 5 enables adaptive thinking by default. Forced tool choice is only
-      // valid when thinking is explicitly disabled; temperature must remain unset.
-      thinking: { type: 'disabled' },
       system,
       tools: [{
         name: toolName,
@@ -191,6 +246,11 @@
       tool_choice: { type: 'tool', name: toolName },
       messages: [{ role: 'user', content: JSON.stringify(payload) }],
     };
+    // Sonnet 5 enables adaptive thinking by default. Forced tool choice is only
+    // valid when thinking is explicitly disabled; temperature must remain unset.
+    // Haiku defaults to non-thinking mode and needs no extra request field.
+    if (model === 'claude-sonnet-5') request.thinking = { type: 'disabled' };
+    return request;
   }
 
   function isBlockedDomain(hostname, blockedDomains) {

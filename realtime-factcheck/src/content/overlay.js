@@ -32,6 +32,7 @@ let interimEl = null;
 let claimFeedEl = null;
 let verdictListEl = null;
 let sessionStatusEl = null;
+let activityEl = null;
 let sessionNoticeEl = null;
 let exportButtonEl = null;
 
@@ -48,6 +49,7 @@ let sessionIsLive = false;
 let activeSessionId = null;
 let legacySessionSequence = 0;
 let claimSequence = 0;
+let latestPipelineMetrics = null;
 
 const claimRecords = new Map();
 const claimAliases = new Map();
@@ -717,6 +719,47 @@ function showError(message, options = {}) {
   }
 }
 
+function formatEstimatedCost(value) {
+  const cost = Number(value);
+  if (!Number.isFinite(cost) || cost <= 0) return '$0.00 est.';
+  if (cost < 0.01) return '<$0.01 est.';
+  return `$${cost.toFixed(2)} est.`;
+}
+
+function updatePipelineActivity(message) {
+  if (!activityEl || !message?.metrics || typeof message.metrics !== 'object') return;
+  const metrics = message.metrics;
+  latestPipelineMetrics = metrics;
+  const status = String(message.status || '').toLowerCase();
+  const labels = {
+    listening: 'Listening',
+    analyzing: 'Analyzing transcript',
+    extraction: 'Transcript analyzed',
+    no_claims: 'No claim in the latest window',
+    claims_rejected: 'Candidate rejected safely',
+    verification: 'Checking evidence',
+    verified: 'Verdict updated',
+    budget_reached: 'AI budget reached · transcript only',
+  };
+  const windows = Number(metrics.analysisWindows) || 0;
+  const claims = Number(metrics.claimsDetected) || 0;
+  const mode = metrics.analysisMode === 'balanced' ? 'Balanced' : 'Efficient';
+  activityEl.innerHTML =
+    '<strong>' + escapeHtml(labels[status] || 'Pipeline active') + '</strong>' +
+    '<span>' + escapeHtml(`${windows} window${windows === 1 ? '' : 's'} · ${claims} claim${claims === 1 ? '' : 's'} · ${formatEstimatedCost(metrics.estimatedCostUsd)} · ${mode}`) + '</span>';
+
+  const emptyClaims = claimFeedEl?.querySelector('.rtfc-claims-empty');
+  if (emptyClaims) {
+    if (status === 'budget_reached') {
+      emptyClaims.textContent = 'The Anthropic session budget was reached. Transcript capture continues without new claim analysis.';
+    } else if (status === 'claims_rejected') {
+      emptyClaims.textContent = 'A candidate was found but rejected because it could not be tied safely to an exact transcript quote.';
+    } else if (windows > 0) {
+      emptyClaims.textContent = `Analyzed ${windows} transcript window${windows === 1 ? '' : 's'}; no check-worthy claim detected yet.`;
+    }
+  }
+}
+
 function panelMarkup() {
   return '<header id="rtfc-header">' +
       '<div class="rtfc-brand-lockup">' +
@@ -730,6 +773,9 @@ function panelMarkup() {
         '</button>' +
       '</div>' +
     '</header>' +
+    '<div id="rtfc-pipeline-activity" class="rtfc-pipeline-activity" role="status" aria-live="polite">' +
+      '<strong>Listening</strong><span>0 windows · 0 claims · $0.00 est. · Efficient</span>' +
+    '</div>' +
     '<div id="rtfc-session-notice" class="rtfc-session-notice" role="status" hidden>' +
       '<strong>Session ended</strong><span>Results remain available for HTML export.</span>' +
     '</div>' +
@@ -1107,6 +1153,7 @@ function createPanel() {
   claimFeedEl = panel.querySelector('#rtfc-claim-feed');
   verdictListEl = panel.querySelector('#rtfc-verdicts');
   sessionStatusEl = panel.querySelector('#rtfc-session-status');
+  activityEl = panel.querySelector('#rtfc-pipeline-activity');
   sessionNoticeEl = panel.querySelector('#rtfc-session-notice');
   exportButtonEl = panel.querySelector('#rtfc-export');
 
@@ -1122,6 +1169,7 @@ function clearOverlayState() {
   transcriptNodes.length = 0;
   sentenceTimestamps.length = 0;
   claimSequence = 0;
+  latestPipelineMetrics = null;
   transcriptCollapsed = false;
   lastTranscriptTimestamp = '';
   lastActiveSpeaker = null;
@@ -1147,6 +1195,7 @@ function removePanel() {
   claimFeedEl = null;
   verdictListEl = null;
   sessionStatusEl = null;
+  activityEl = null;
   sessionNoticeEl = null;
   exportButtonEl = null;
   sessionIsLive = false;
@@ -1371,6 +1420,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       break;
     }
+
+    case 'PIPELINE_ACTIVITY':
+      updatePipelineActivity(message);
+      break;
 
     case 'NEW_CLAIM':
     case 'NEW_VERDICT': {

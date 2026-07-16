@@ -47,7 +47,7 @@
               <td>Retrieve potentially relevant web evidence.</td>
             </tr>
             <tr>
-              <td>The claim, context, and retrieved evidence</td>
+              <td>The claim and retrieved evidence</td>
               <td>Anthropic</td>
               <td>Produce a grounded fact-check result.</td>
             </tr>
@@ -59,8 +59,8 @@
 
     <section aria-labelledby="storageTitle">
       <h2 id="storageTitle">Data stored by the extension</h2>
-      <p>Chrome local storage keeps your Anthropic, Deepgram, and Serper API keys, selected transcript language, and consent choice. Consent is tied to the notice version shown above, so a changed notice requires a new choice.</p>
-      <p>Chrome's memory-backed session storage temporarily holds the active session identity and capture state plus a bounded set of pending claims. A pending record can include the claim, short transcript source quotes, experimental lexical markers, and an undelivered result with cited source snippets and links. This allows safe recovery after a background-worker restart and reliable delivery of a terminal card. It is restricted to trusted extension contexts and cleared when the session stops, startup rolls back, or recovery finds no valid capture; after an unexpected failure it may remain until cleanup next runs or the browser session ends.</p>
+      <p>Chrome local storage keeps your Anthropic, Deepgram, and Serper API keys, selected transcript language, Efficient/Balanced analysis preference, Anthropic session-budget preference, and consent choice. Consent is tied to the notice version shown above, so a changed notice requires a new choice.</p>
+      <p>Chrome's memory-backed session storage temporarily holds the active session identity and capture state, aggregate provider token/cost counters, and a bounded set of pending claims. A pending record can include the claim, short transcript source quotes, experimental lexical markers, and an undelivered result with cited source snippets and links. This allows safe recovery after a background-worker restart, preservation of the session guard, and reliable delivery of a terminal card. It is restricted to trusted extension contexts and cleared when the session stops, startup rolls back, or recovery finds no valid capture; after an unexpected failure it may remain until cleanup next runs or the browser session ends.</p>
       <p>Fact-check cards appear in an isolated page overlay, and a session export is created only when you request it as a local HTML file.</p>
       <p>Local Chrome storage is retained until you replace or clear the values, clear extension data, or uninstall InTruth. It is not guaranteed to be encrypted against someone with access to your device or browser profile. Use restricted, revocable provider keys where available and rotate any key you believe is exposed.</p>
     </section>
@@ -75,6 +75,8 @@
       <h2 id="controlsTitle">Your controls</h2>
       <ul>
         <li>Choose whether to consent and start a session.</li>
+        <li>Choose Efficient mode for Haiku-only analysis or Balanced mode to reserve Sonnet 5 for evidence verdicts.</li>
+        <li>Set an estimated Anthropic session guard; reaching it pauses new claim analysis while the transcript remains active.</li>
         <li>Stop capture from the popup; requests already accepted by a provider may still finish.</li>
         <li>Clear InTruth data through Chrome's extension settings or uninstall the extension.</li>
         <li>Revoke or rotate provider API keys from the relevant provider account.</li>

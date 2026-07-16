@@ -55,8 +55,9 @@
         <div class="key-field">
           <label class="key-label" for="languageSelect">Transcript language</label>
           <div class="language-row">
-            <span id="languageCode" class="language-code" aria-hidden="true">EN</span>
+            <span id="languageCode" class="language-code" aria-hidden="true">AUTO</span>
             <select class="key-input key-select" id="languageSelect">
+              <option value="multi">Auto · multilingual</option>
               <option value="en">English</option>
               <option value="es">Spanish</option>
               <option value="fr">French</option>
@@ -78,6 +79,33 @@
         </div>
       </section>
 
+      <section class="config-section" id="analysisSection" aria-labelledby="analysisTitle">
+        <div class="section-heading">
+          <h2 id="analysisTitle">Analysis controls</h2>
+          <span class="section-kicker">Cost guard</span>
+        </div>
+
+        <div class="key-field">
+          <label class="key-label" for="analysisMode">Analysis mode</label>
+          <select class="key-input key-select" id="analysisMode" aria-describedby="analysisModeHelp">
+            <option value="efficient">Efficient · Haiku 4.5</option>
+            <option value="balanced">Balanced · Haiku + Sonnet 5</option>
+          </select>
+          <p class="field-help" id="analysisModeHelp">Efficient uses Haiku for extraction and evidence. Balanced reserves Sonnet for evidence verdicts.</p>
+        </div>
+
+        <div class="key-field">
+          <label class="key-label" for="sessionBudgetUsd">Anthropic session budget</label>
+          <select class="key-input key-select" id="sessionBudgetUsd" aria-describedby="sessionBudgetHelp">
+            <option value="0.25">$0.25 estimated</option>
+            <option value="0.5" selected>$0.50 estimated</option>
+            <option value="1">$1.00 estimated</option>
+            <option value="0">No in-extension limit</option>
+          </select>
+          <p class="field-help" id="sessionBudgetHelp">New AI analysis pauses at the limit while transcription continues. Deepgram and Serper charges are separate.</p>
+        </div>
+      </section>
+
       <section class="privacy-disclosure" aria-labelledby="privacyTitle">
         <div class="section-heading">
           <h2 id="privacyTitle">Before you start</h2>
@@ -89,7 +117,7 @@
           <li><strong>Claim search queries</strong> are sent to Serper to find evidence.</li>
         </ul>
         <p class="storage-note">Keys are stored locally in Chrome. Saving a key does not validate it; each provider accepts or rejects it when a request starts.</p>
-        <p class="cost-note">Using these APIs may incur charges on your provider accounts. InTruth does not control provider pricing or limits.</p>
+        <p class="cost-note">Using these APIs may incur charges. The session guard is an Anthropic estimate only; provider dashboards and account spend limits remain authoritative.</p>
         <label class="consent-row" for="privacyConsent">
           <input id="privacyConsent" type="checkbox" required/>
           <span>I understand these transfers and agree to start the session.</span>

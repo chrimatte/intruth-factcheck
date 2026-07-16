@@ -353,7 +353,7 @@ test('STOP aborts provider work immediately, ignores tail audio for analysis, an
   const transcriptResponse = await harness.message({
     type: 'TRANSCRIPT_RESULT',
     sessionId,
-    text: 'Sentence one is factual. Sentence two is factual. Sentence three is factual. Sentence four is factual.',
+    text: 'Sentence one is factual. Sentence two is factual. Sentence three is factual. Sentence four is factual. Sentence five is factual. Sentence six is factual.',
     isFinal: true,
     confidence: 0.99,
   }, offscreenSender());
@@ -396,6 +396,7 @@ test('terminal outbox is durable before delivery and retries a transient overlay
   const claim = 'The annual rate was 4.2 percent in December 2025.';
   let updateAttempts = 0;
   let persistedBeforeFirstSend = null;
+  const anthropicBodies = [];
   const hooks = {
     tabSend(_tabId, message, state) {
       if (message.type === 'PING') {
@@ -419,9 +420,11 @@ test('terminal outbox is durable before delivery and retries a transient overlay
     fetch(url, options) {
       if (url.includes('anthropic.com')) {
         const body = JSON.parse(options.body);
+        anthropicBodies.push(body);
         const toolName = body.tools[0].name;
         if (toolName === 'emit_claims') {
           return jsonResponse({
+            usage: { input_tokens: 1000, output_tokens: 100 },
             content: [{
               type: 'tool_use',
               name: toolName,
@@ -435,6 +438,12 @@ test('terminal outbox is durable before delivery and retries a transient overlay
           });
         }
         return jsonResponse({
+          usage: {
+            input_tokens: 500,
+            output_tokens: 80,
+            cache_creation_input_tokens: 200,
+            cache_read_input_tokens: 300,
+          },
           content: [{
             type: 'tool_use',
             name: toolName,
@@ -469,7 +478,7 @@ test('terminal outbox is durable before delivery and retries a transient overlay
   const response = await harness.message({
     type: 'TRANSCRIPT_RESULT',
     sessionId,
-    text: `${claim} Context sentence two. Context sentence three. Context sentence four.`,
+    text: `${claim} Context sentence two. Context sentence three. Context sentence four. Context sentence five. Context sentence six.`,
     isFinal: true,
     confidence: 0.99,
   }, offscreenSender());
@@ -495,6 +504,292 @@ test('terminal outbox is durable before delivery and retries a transient overlay
     .at(-1).message.results[0];
   assert.equal(finalMessage.verdict, 'TRUE');
   assert.equal(finalMessage.confidence, 'MEDIUM');
+  assert.deepEqual(
+    anthropicBodies.map(body => body.model),
+    ['claude-haiku-4-5-20251001', 'claude-haiku-4-5-20251001']
+  );
+  const status = await harness.message({ type: 'GET_STATUS' });
+  assert.equal(status.metrics.anthropicRequests, 2);
+  assert.equal(status.metrics.extractionRequests, 1);
+  assert.equal(status.metrics.verificationRequests, 1);
+  assert.equal(status.metrics.inputTokens, 1500);
+  assert.equal(status.metrics.outputTokens, 180);
+  assert.equal(status.metrics.cacheCreationInputTokens, 200);
+  assert.equal(status.metrics.cacheReadInputTokens, 300);
+  assert.equal(status.metrics.estimatedCostUsd, 0.00268);
+
+  const stopped = await harness.message(
+    { type: 'STOP_FACTCHECK', sessionId },
+    popupSender()
+  );
+  assert.equal(stopped.ok, true);
+});
+
+test('balanced mode extracts Italian claims with Haiku and verifies them with Sonnet', async () => {
+  const claim = "Nel 2025 l'economia italiana non è cresciuta del 4,2 per cento.";
+  const anthropicBodies = [];
+  const hooks = {
+    fetch(url, options) {
+      if (url.includes('anthropic.com')) {
+        const body = JSON.parse(options.body);
+        anthropicBodies.push(body);
+        const toolName = body.tools[0].name;
+        if (toolName === 'emit_claims') {
+          return jsonResponse({
+            usage: { input_tokens: 900, output_tokens: 90 },
+            content: [{
+              type: 'tool_use',
+              name: toolName,
+              input: {
+                claims: [{
+                  claim,
+                  sourceQuotes: [{ sourceSentenceId: 'U1', quote: claim }],
+                }],
+              },
+            }],
+          });
+        }
+        return jsonResponse({
+          usage: { input_tokens: 700, output_tokens: 70 },
+          content: [{
+            type: 'tool_use',
+            name: toolName,
+            input: {
+              verdict: 'TRUE',
+              confidence: 'MEDIUM',
+              explanation: 'La fonte citata conferma direttamente il dato contestualizzato.',
+              citations: [{
+                evidenceId: 'E1',
+                quote: "Nel 2025 l'economia italiana non è cresciuta del 4,2 per cento",
+              }],
+            },
+          }],
+        });
+      }
+      assert.match(url, /serper\.dev/);
+      return jsonResponse({
+        organic: [{
+          link: 'https://istat.example/economia-2025',
+          title: 'Rapporto economico 2025',
+          snippet: "Nel 2025 l'economia italiana non è cresciuta del 4,2 per cento rispetto all'anno precedente.",
+          date: '2026-01-15',
+        }],
+      });
+    },
+  };
+  const harness = loadWorker({
+    hooks,
+    config: {
+      transcriptLanguage: 'it',
+      analysisMode: 'balanced',
+      sessionBudgetUsd: 1,
+    },
+  });
+  await harness.ready();
+  const sessionId = 'session_italian_balanced';
+  await startSession(harness, sessionId);
+
+  const queued = await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    text: `${claim} Questa è una frase di contesto. Il relatore continua a parlare. Il pubblico ascolta. La discussione prosegue. Il segmento ora termina.`,
+    isFinal: true,
+    confidence: 0.9,
+  }, offscreenSender());
+  assert.equal(queued.queued, true);
+
+  await eventually(
+    () => harness.state.tabMessages.some(entry => (
+      entry.message.type === 'UPDATE_VERDICTS' &&
+      entry.message.results?.[0]?.verdict === 'TRUE'
+    )),
+    'Italian verdict was not delivered'
+  );
+  assert.deepEqual(
+    anthropicBodies.map(body => body.model),
+    ['claude-haiku-4-5-20251001', 'claude-sonnet-5']
+  );
+  const extractionPayload = JSON.parse(anthropicBodies[0].messages[0].content);
+  assert.equal(extractionPayload.language, 'it');
+  assert.equal(extractionPayload.language_name, 'Italian');
+  assert.equal(anthropicBodies[0].thinking, undefined);
+  assert.deepEqual(anthropicBodies[1].thinking, { type: 'disabled' });
+
+  const stopped = await harness.message(
+    { type: 'STOP_FACTCHECK', sessionId },
+    popupSender()
+  );
+  assert.equal(stopped.ok, true);
+});
+
+test('adaptive batching avoids tiny paid requests and flushes at six utterances', async () => {
+  let anthropicCalls = 0;
+  const hooks = {
+    fetch(url, options) {
+      assert.match(url, /anthropic\.com/);
+      anthropicCalls++;
+      const body = JSON.parse(options.body);
+      return jsonResponse({
+        usage: { input_tokens: 100, output_tokens: 5 },
+        content: [{
+          type: 'tool_use',
+          name: body.tools[0].name,
+          input: { claims: [] },
+        }],
+      });
+    },
+  };
+  const harness = loadWorker({ hooks });
+  await harness.ready();
+  const sessionId = 'session_adaptive_batching';
+  await startSession(harness, sessionId);
+
+  await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    text: 'One short sentence. Two short sentences. Three short sentences. Four short sentences.',
+    isFinal: true,
+    confidence: 0.99,
+  }, offscreenSender());
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(anthropicCalls, 0, 'four short utterances triggered a premature paid request');
+
+  await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    text: 'Five short sentences. Six short sentences.',
+    isFinal: true,
+    confidence: 0.99,
+  }, offscreenSender());
+  await eventually(() => anthropicCalls === 1, 'six utterances did not flush the extraction batch');
+
+  const stopped = await harness.message(
+    { type: 'STOP_FACTCHECK', sessionId },
+    popupSender()
+  );
+  assert.equal(stopped.ok, true);
+});
+
+test('balanced extraction falls back once on invalid structure but not on a legitimate empty result', async () => {
+  const models = [];
+  let requestNumber = 0;
+  const hooks = {
+    fetch(url, options) {
+      assert.match(url, /anthropic\.com/);
+      requestNumber++;
+      const body = JSON.parse(options.body);
+      models.push(body.model);
+      if (requestNumber === 1) {
+        return jsonResponse({
+          usage: { input_tokens: 100, output_tokens: 10 },
+          content: [{ type: 'text', text: 'not a tool result' }],
+        });
+      }
+      return jsonResponse({
+        usage: { input_tokens: 100, output_tokens: 5 },
+        content: [{
+          type: 'tool_use',
+          name: body.tools[0].name,
+          input: { claims: [] },
+        }],
+      });
+    },
+  };
+  const harness = loadWorker({
+    hooks,
+    config: { analysisMode: 'balanced', sessionBudgetUsd: 1 },
+  });
+  await harness.ready();
+  const sessionId = 'session_balanced_fallback';
+  await startSession(harness, sessionId);
+
+  await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    text: 'First one. First two. First three. First four. First five. First six.',
+    isFinal: true,
+    confidence: 0.99,
+  }, offscreenSender());
+  await eventually(() => models.length === 2, 'invalid Haiku output did not trigger one fallback');
+  assert.deepEqual(models, ['claude-haiku-4-5-20251001', 'claude-sonnet-5']);
+
+  await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    text: 'Second one. Second two. Second three. Second four. Second five. Second six.',
+    isFinal: true,
+    confidence: 0.99,
+  }, offscreenSender());
+  await eventually(() => models.length === 3, 'second extraction did not complete');
+  await new Promise(resolve => setTimeout(resolve, 25));
+  assert.deepEqual(models, [
+    'claude-haiku-4-5-20251001',
+    'claude-sonnet-5',
+    'claude-haiku-4-5-20251001',
+  ]);
+
+  const stopped = await harness.message(
+    { type: 'STOP_FACTCHECK', sessionId },
+    popupSender()
+  );
+  assert.equal(stopped.ok, true);
+});
+
+test('Anthropic budget stops new analysis while transcript ingestion remains active', async () => {
+  let anthropicCalls = 0;
+  const hooks = {
+    fetch(url, options) {
+      assert.match(url, /anthropic\.com/);
+      anthropicCalls++;
+      const body = JSON.parse(options.body);
+      return jsonResponse({
+        usage: { input_tokens: 250000, output_tokens: 0 },
+        content: [{
+          type: 'tool_use',
+          name: body.tools[0].name,
+          input: { claims: [] },
+        }],
+      });
+    },
+  };
+  const harness = loadWorker({
+    hooks,
+    config: { analysisMode: 'efficient', sessionBudgetUsd: 0.25 },
+  });
+  await harness.ready();
+  const sessionId = 'session_cost_budget';
+  await startSession(harness, sessionId);
+
+  const first = await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    text: 'First one. First two. First three. First four. First five. First six.',
+    isFinal: true,
+    confidence: 0.99,
+  }, offscreenSender());
+  assert.equal(first.queued, true);
+  await eventually(async () => {
+    const status = await harness.message({ type: 'GET_STATUS' });
+    return status.metrics?.budgetReached === true;
+  }, 'usage did not reach the configured budget');
+  assert.equal(anthropicCalls, 1);
+
+  const second = await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    text: 'Second one. Second two. Second three. Second four. Second five. Second six.',
+    isFinal: true,
+    confidence: 0.99,
+  }, offscreenSender());
+  assert.equal(second.queued, true, 'budget should not disable transcript ingestion');
+  await eventually(
+    () => harness.state.tabMessages.some(entry => (
+      entry.message.type === 'PIPELINE_ERROR' &&
+      entry.message.code === 'SESSION_BUDGET_REACHED'
+    )),
+    'budget warning was not delivered'
+  );
+  assert.equal(anthropicCalls, 1, 'budget limit allowed another Anthropic request');
 
   const stopped = await harness.message(
     { type: 'STOP_FACTCHECK', sessionId },

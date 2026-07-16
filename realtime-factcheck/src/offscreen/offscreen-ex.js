@@ -12,7 +12,7 @@ const MAX_UTTERANCE_CHARS = 4000;
 const MAX_UTTERANCE_PARTS = 40;
 const MAX_UTTERANCE_SECONDS = 30;
 const ALLOWED_LANGUAGES = new Set([
-  'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'hi',
+  'multi', 'en', 'es', 'fr', 'de', 'it', 'pt', 'nl', 'hi',
   'ja', 'zh', 'ar', 'ko', 'ru', 'pl', 'sv', 'tr',
 ]);
 
@@ -199,7 +199,7 @@ async function startCapture(message) {
     throw new CaptureError('STREAM_ID_MISSING', 'Chrome did not provide a tab audio stream.', true);
   }
 
-  const language = ALLOWED_LANGUAGES.has(message.language) ? message.language : 'en';
+  const language = ALLOWED_LANGUAGES.has(message.language) ? message.language : 'multi';
   const sessionId = normalizeSessionId(message.sessionId);
   // Claim the lifecycle before the first await. Otherwise STOP_CAPTURE can
   // report success while a pending storage read later resumes and starts audio.

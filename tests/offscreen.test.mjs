@@ -137,16 +137,79 @@ test('unknown attribution and truncated mixed metadata preserve the complete tex
   assert.equal(truncatedResults[0].words.length, 500);
 });
 
+test('UtteranceEnd flushes an Italian final segment even without speech_final', () => {
+  const harness = loadOffscreen();
+  evaluate(harness, `
+    currentCapture = {
+      sessionId: 'session_italian_utterance',
+      state: 'listening',
+      utterance: createEmptyUtterance(),
+    };
+    handleDeepgramMessage(currentCapture, { data: JSON.stringify({
+      type: 'Results',
+      is_final: true,
+      speech_final: false,
+      channel: { alternatives: [{
+        transcript: "L'economia italiana è cresciuta.",
+        confidence: 0.92,
+        words: [{
+          punctuated_word: "L'economia",
+          start: 0,
+          end: 0.6,
+          confidence: 0.92,
+          speaker: 0,
+        }, {
+          punctuated_word: 'italiana',
+          start: 0.6,
+          end: 1.1,
+          confidence: 0.91,
+          speaker: 0,
+        }, {
+          punctuated_word: 'è',
+          start: 1.1,
+          end: 1.2,
+          confidence: 0.9,
+          speaker: 0,
+        }, {
+          punctuated_word: 'cresciuta.',
+          start: 1.2,
+          end: 1.8,
+          confidence: 0.93,
+          speaker: 0,
+        }],
+      }] },
+    }) });
+    handleDeepgramMessage(currentCapture, { data: JSON.stringify({
+      type: 'UtteranceEnd',
+      last_word_end: 1.8,
+    }) });
+  `);
+
+  const transcriptMessages = harness.messages.filter(
+    message => message.type === 'TRANSCRIPT_RESULT'
+  );
+  assert.equal(transcriptMessages.filter(message => message.isFinal).length, 1);
+  assert.equal(
+    transcriptMessages.find(message => message.isFinal)?.text,
+    "L'economia italiana è cresciuta."
+  );
+  assert.equal(
+    harness.messages.find(message => message.type === 'UTTERANCE_END')?.flushed,
+    true
+  );
+});
+
 test('Deepgram streaming URL uses the current low-latency transcription contract', () => {
   const harness = loadOffscreen();
   const value = evaluate(
     harness,
-    "buildDeepgramUrl({ audioContext: { sampleRate: 48000 }, language: 'en' })"
+    "buildDeepgramUrl({ audioContext: { sampleRate: 48000 }, language: 'multi' })"
   );
   const url = new URL(value);
 
   assert.equal(url.origin, 'wss://api.deepgram.com');
   assert.equal(url.searchParams.get('model'), 'nova-3');
+  assert.equal(url.searchParams.get('language'), 'multi');
   assert.equal(url.searchParams.get('sample_rate'), '48000');
   assert.equal(url.searchParams.get('interim_results'), 'true');
   assert.equal(url.searchParams.get('endpointing'), '300');

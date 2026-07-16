@@ -83,6 +83,18 @@ test("utterance timestamps estimate media start time and clamp safely", async ()
   assert.match(source, /const timestamp = getVideoTimestamp\(message\)/);
 });
 
+test("pipeline activity makes empty analysis and estimated cost visible", async () => {
+  const source = await readFile(overlayPath, "utf8");
+
+  assert.match(source, /id="rtfc-pipeline-activity"/);
+  assert.match(source, /case 'PIPELINE_ACTIVITY'/);
+  assert.match(source, /no_claims: 'No claim in the latest window'/);
+  assert.match(source, /claims_rejected: 'Candidate rejected safely'/);
+  assert.match(source, /budget_reached: 'AI budget reached · transcript only'/);
+  assert.match(source, /estimatedCostUsd/);
+  assert.match(source, /no check-worthy claim detected yet/);
+});
+
 test("visual fixture exercises hostile page CSS and lifecycle probes", async () => {
   const fixture = await readFile(fixturePath, "utf8");
 

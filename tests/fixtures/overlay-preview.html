@@ -55,6 +55,14 @@
       text: 'The annual rate was 4.2 percent in December 2025.', speaker: 0
     });
     emit({
+      type: 'PIPELINE_ACTIVITY', sessionId, status: 'verification',
+      metrics: {
+        analysisWindows: 7, claimsDetected: 4, claimsCompleted: 3,
+        anthropicRequests: 9, estimatedCostUsd: 0.0384,
+        analysisMode: 'efficient', sessionBudgetUsd: 0.5
+      }
+    });
+    emit({
       type: 'NEW_VERDICT', sessionId,
       results: [{
         sessionId, claimId: 'claim-checking', claim: 'The unemployment rate is currently below five percent.',
