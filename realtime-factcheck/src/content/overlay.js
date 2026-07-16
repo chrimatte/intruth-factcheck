@@ -21,6 +21,7 @@ const TERMINAL_STATES = new Set([
   'FALSE',
   'MISLEADING',
   'UNVERIFIABLE',
+  'OPINION',
   'ERROR',
 ]);
 
@@ -214,6 +215,7 @@ function normalizedResultState(result, forceChecking = false) {
 
   if (forceChecking || result?.pending === true || status === 'CHECKING' || status === 'PENDING') return 'CHECKING';
   if (status === 'ERROR' || verdict === 'ERROR' || result?.error) return 'ERROR';
+  if (status === 'OPINION' || verdict === 'OPINION') return 'OPINION';
   if (status === 'UNVERIFIABLE' || verdict === 'UNVERIFIABLE') return 'UNVERIFIABLE';
   if (TERMINAL_STATES.has(verdict)) return verdict;
   if (status === 'COMPLETE' && verdict) return verdict;
@@ -228,6 +230,7 @@ function stateClass(state) {
     FALSE: 'false',
     MISLEADING: 'misleading',
     UNVERIFIABLE: 'unverifiable',
+    OPINION: 'opinion',
     ERROR: 'error',
   };
   return classes[state] || 'unverifiable';
@@ -241,6 +244,7 @@ function stateLabel(state) {
     FALSE: 'Contradicted',
     MISLEADING: 'Misleading',
     UNVERIFIABLE: 'Not enough evidence',
+    OPINION: 'Opinion',
     ERROR: 'Check failed',
   };
   return labels[state] || 'Not enough evidence';
@@ -254,6 +258,7 @@ function queueStateLabel(state) {
     FALSE: 'Contradicted',
     MISLEADING: 'Misleading',
     UNVERIFIABLE: 'Unverified',
+    OPINION: 'Opinion',
     ERROR: 'Failed',
   };
   return labels[state] || 'Unverified';
@@ -308,7 +313,8 @@ function normalizeSources(result) {
 function buildSourcesHTML(result) {
   const sources = normalizeSources(result);
   if (!sources.length) {
-    if (normalizedResultState(result) === 'CHECKING') return '';
+    const state = normalizedResultState(result);
+    if (state === 'CHECKING' || state === 'OPINION') return '';
     return '<section class="rtfc-sources rtfc-sources--empty" aria-label="Evidence sources">' +
       '<h4>Sources reviewed</h4><p class="rtfc-source-empty">No source links were available for this result.</p>' +
     '</section>';
@@ -509,6 +515,8 @@ function buildClaimCard(record) {
 
   const explanation = state === 'CHECKING'
     ? 'Comparing this claim with available sources…'
+    : state === 'OPINION'
+      ? (result.explanation || 'This is an opinion or interpretation, so no factual verdict applies.')
     : state === 'ERROR'
       ? (result.explanation || result.error || 'Verification could not be completed.')
       : state === 'UNVERIFIABLE'
@@ -523,12 +531,13 @@ function buildClaimCard(record) {
   article.dataset.speakerid = result.dominantSpeakerId === null || result.dominantSpeakerId === undefined
     ? ''
     : String(result.dominantSpeakerId);
+  article.tabIndex = -1;
   article.setAttribute('aria-labelledby', headingId);
   article.innerHTML =
     '<div class="rtfc-verdict-topline">' +
       '<div class="rtfc-verdict-status">' +
         '<span class="rtfc-badge rtfc-badge--' + className + '">' + escapeHtml(stateLabel(state)) + '</span>' +
-        (confidence ? '<span class="rtfc-confidence">' + escapeHtml(confidence) + ' confidence</span>' : '') +
+        (confidence ? '<span class="rtfc-confidence">' + escapeHtml(confidence) + ' evidence confidence</span>' : '') +
       '</div>' +
       '<time class="rtfc-timestamp">' + escapeHtml(result._timestamp || '') + '</time>' +
     '</div>' +
@@ -561,6 +570,21 @@ function updateClaimBullet(record) {
   record.bullet.className = `rtfc-claim-item rtfc-claim-item--${stateClass(record.state)}`;
   const status = record.bullet.querySelector('.rtfc-claim-state');
   if (status) status.textContent = queueStateLabel(record.state);
+  const link = record.bullet.querySelector('.rtfc-claim-link');
+  if (link) {
+    const hasTarget = Boolean(record.card?.isConnected);
+    const action = record.state === 'CHECKING'
+      ? 'View verification progress'
+      : record.state === 'OPINION'
+        ? 'View opinion classification'
+        : 'View verdict';
+    link.disabled = !hasTarget;
+    link.setAttribute('aria-controls', record.domId);
+    link.setAttribute(
+      'aria-label',
+      `${action} for statement ${record.sequence}: ${record.result.claim || 'Untitled statement'}`,
+    );
+  }
 }
 
 function renderClaimRecord(record) {
@@ -569,10 +593,18 @@ function renderClaimRecord(record) {
   empty?.remove();
 
   const expanded = record.card?.querySelector('.rtfc-marker-toggle')?.getAttribute('aria-expanded') === 'true';
+  const hadFocus = record.card?.matches(':focus') === true;
+  const highlightRemaining = Math.max(
+    0,
+    Number(record.navigationHighlightExpiresAt || 0) - Date.now(),
+  );
   const newCard = buildClaimCard(record);
   if (record.card?.isConnected) record.card.replaceWith(newCard);
   else verdictListEl.prepend(newCard);
   record.card = newCard;
+
+  if (hadFocus) newCard.focus({ preventScroll: true });
+  if (highlightRemaining > 0) highlightVerdictCard(record, newCard, highlightRemaining);
 
   if (expanded) {
     const toggle = newCard.querySelector('.rtfc-marker-toggle');
@@ -594,9 +626,12 @@ function createClaimBullet(record) {
   item.dataset.claimId = record.id;
   item.dataset.state = record.state;
   item.innerHTML =
-    '<span class="rtfc-claim-number" aria-hidden="true">' + record.sequence + '</span>' +
-    '<span class="rtfc-claim-copy" dir="auto">' + escapeHtml(record.result.claim) + '</span>' +
-    '<span class="rtfc-claim-state">' + escapeHtml(queueStateLabel(record.state)) + '</span>';
+    '<button type="button" class="rtfc-claim-link" data-action="open-verdict" data-claim-id="' + escapeHtml(record.id) + '" disabled>' +
+      '<span class="rtfc-claim-number" aria-hidden="true">' + record.sequence + '</span>' +
+      '<span class="rtfc-claim-copy" dir="auto">' + escapeHtml(record.result.claim) + '</span>' +
+      '<span class="rtfc-claim-state">' + escapeHtml(queueStateLabel(record.state)) + '</span>' +
+      '<span class="rtfc-claim-open" aria-hidden="true">›</span>' +
+    '</button>';
   claimFeedEl.prepend(item);
   return item;
 }
@@ -717,8 +752,8 @@ function updateExportButton() {
   const available = typeof hasExportableSession === 'function' && hasExportableSession();
   exportButtonEl.disabled = !available;
   exportButtonEl.title = available
-    ? 'Download completed claims as an HTML report'
-    : 'A completed claim is required before a report can be exported';
+    ? 'Download completed statements as an HTML report'
+    : 'A completed statement is required before a report can be exported';
 }
 
 function showError(message, options = {}) {
@@ -762,25 +797,31 @@ function updatePipelineActivity(message) {
   latestPipelineMetrics = metrics;
   const status = String(message.status || '').toLowerCase();
   const labels = {
-    listening: 'Listening for claims',
+    listening: 'Listening for statements',
     analyzing: 'Analyzing transcript',
     extraction: 'Passage analyzed',
-    no_claims: 'No claim detected',
-    claims_rejected: 'Potential claim skipped',
+    no_claims: 'No statement detected',
+    claims_rejected: 'Potential statement skipped',
     verification: 'Checking sources',
     verified: 'Verdict ready',
+    opinion: 'Opinion identified',
     budget_reached: 'Budget reached · transcription continues',
   };
   const windows = Number(metrics.analysisWindows) || 0;
   const claims = Number(metrics.claimsDetected) || 0;
+  const opinions = Math.min(claims, Number(metrics.opinionsDetected) || 0);
+  const factualClaims = Math.max(0, claims - opinions);
   const mode = metrics.analysisMode === 'balanced' ? 'Balanced' : 'Efficient';
+  const statementMetrics = opinions > 0
+    ? `${factualClaims} claim${factualClaims === 1 ? '' : 's'} · ${opinions} opinion${opinions === 1 ? '' : 's'}`
+    : `${claims} claim${claims === 1 ? '' : 's'}`;
   activityEl.innerHTML =
     '<div class="rtfc-activity-topline">' +
       '<strong>' + escapeHtml(labels[status] || 'Analysis active') + '</strong>' +
       '<span class="rtfc-activity-mode">' + escapeHtml(`${mode} mode`) + '</span>' +
     '</div>' +
     '<span class="rtfc-activity-metrics">' +
-      escapeHtml(`${windows} passage${windows === 1 ? '' : 's'} · ${claims} claim${claims === 1 ? '' : 's'} · ${formatEstimatedCost(metrics.estimatedCostUsd)}`) +
+      escapeHtml(`${windows} passage${windows === 1 ? '' : 's'} · ${statementMetrics} · ${formatEstimatedCost(metrics.estimatedCostUsd)}`) +
     '</span>';
 
   const emptyClaims = claimFeedEl?.querySelector('.rtfc-claims-empty');
@@ -792,12 +833,12 @@ function updatePipelineActivity(message) {
       );
     } else if (status === 'claims_rejected') {
       setClaimEmptyState(
-        'Potential claim skipped',
+        'Potential statement skipped',
         'It could not be matched reliably to the transcript.'
       );
     } else if (windows > 0) {
       setClaimEmptyState(
-        'No claim detected',
+        'No statement detected',
         `${windows} transcript passage${windows === 1 ? '' : 's'} analyzed so far.`
       );
     }
@@ -818,7 +859,7 @@ function panelMarkup() {
       '</div>' +
     '</header>' +
     '<div id="rtfc-pipeline-activity" class="rtfc-pipeline-activity" role="status" aria-live="polite">' +
-      '<div class="rtfc-activity-topline"><strong>Listening for claims</strong><span class="rtfc-activity-mode">Efficient mode</span></div>' +
+      '<div class="rtfc-activity-topline"><strong>Listening for statements</strong><span class="rtfc-activity-mode">Efficient mode</span></div>' +
       '<span class="rtfc-activity-metrics">0 passages · 0 claims · $0.00 est.</span>' +
     '</div>' +
     '<div id="rtfc-session-notice" class="rtfc-session-notice" role="status" hidden>' +
@@ -836,19 +877,56 @@ function panelMarkup() {
         '</div>' +
       '</section>' +
       '<section id="rtfc-claims-section" class="rtfc-section" aria-labelledby="rtfc-claims-heading">' +
-        '<div class="rtfc-section-header"><div><p class="rtfc-section-kicker">Claim detection</p><h2 id="rtfc-claims-heading">Claims</h2></div></div>' +
-        '<ol id="rtfc-claim-feed"><li class="rtfc-claims-empty"><strong>No claims yet</strong><span>Factual statements will appear here when they are ready to verify.</span></li></ol>' +
+        '<div class="rtfc-section-header"><div><p class="rtfc-section-kicker">Statement detection</p><h2 id="rtfc-claims-heading">Statements</h2></div></div>' +
+        '<ol id="rtfc-claim-feed"><li class="rtfc-claims-empty"><strong>No statements yet</strong><span>Factual claims and clearly marked opinions will appear here.</span></li></ol>' +
       '</section>' +
       '<section id="rtfc-verdicts-section" class="rtfc-section" aria-labelledby="rtfc-verdicts-heading">' +
         '<div class="rtfc-section-header rtfc-verdicts-heading-row">' +
-          '<div><p class="rtfc-section-kicker">Evidence check</p><h2 id="rtfc-verdicts-heading">Verdicts</h2></div>' +
+          '<div><p class="rtfc-section-kicker">Evidence and classification</p><h2 id="rtfc-verdicts-heading">Results</h2></div>' +
           '<div id="rtfc-speaker-editor" aria-label="Speaker names" hidden></div>' +
         '</div>' +
         '<div id="rtfc-verdicts" role="log" aria-live="polite" aria-relevant="additions text">' +
-          '<div class="rtfc-empty-state"><strong>No verdicts yet</strong><span>Evidence-backed results will appear after a claim is checked.</span></div>' +
+          '<div class="rtfc-empty-state"><strong>No results yet</strong><span>Evidence verdicts and opinion labels will appear here.</span></div>' +
         '</div>' +
       '</section>' +
     '</div>';
+}
+
+function highlightVerdictCard(record, card, duration = 1200) {
+  if (!record || !card?.isConnected) return;
+  const highlightToken = {};
+  record.navigationHighlightToken = highlightToken;
+  card.classList.remove('rtfc-verdict--targeted');
+  void card.offsetWidth;
+  card.classList.add('rtfc-verdict--targeted');
+  setManagedTimeout(() => {
+    if (record.navigationHighlightToken !== highlightToken) return;
+    card.classList.remove('rtfc-verdict--targeted');
+    delete record.navigationHighlightToken;
+    delete record.navigationHighlightExpiresAt;
+  }, Math.max(1, duration));
+}
+
+function focusClaimVerdict(claimId) {
+  const record = claimRecords.get(String(claimId || ''));
+  const card = record?.card;
+  const body = panel?.querySelector('#rtfc-body');
+  if (!card?.isConnected || !body) return;
+
+  const bodyRect = body.getBoundingClientRect();
+  const cardRect = card.getBoundingClientRect();
+  const targetTop = Math.max(0, body.scrollTop + cardRect.top - bodyRect.top - 12);
+  const reduceMotion = typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  card.focus({ preventScroll: true });
+  body.scrollTo({
+    top: targetTop,
+    behavior: reduceMotion ? 'auto' : 'smooth',
+  });
+
+  record.navigationHighlightExpiresAt = Date.now() + 1200;
+  highlightVerdictCard(record, card);
 }
 
 function installPanelEvents() {
@@ -858,6 +936,11 @@ function installPanelEvents() {
   panel.addEventListener('click', async (event) => {
     const target = event.target.closest('button, a');
     if (!target || !panel.contains(target)) return;
+
+    if (target.dataset.action === 'open-verdict') {
+      focusClaimVerdict(target.dataset.claimId);
+      return;
+    }
 
     if (target.id === 'rtfc-export') {
       const result = typeof exportHTMLReport === 'function'
@@ -1277,7 +1360,7 @@ function finishSession() {
   if (noticeCopy) {
     noticeCopy.textContent = hasResults
       ? 'Completed results remain available for export.'
-      : 'No completed claims are available to export.';
+      : 'No completed statements are available to export.';
   }
   sessionNoticeEl.hidden = false;
   panel.querySelector('#rtfc-close')?.setAttribute('aria-label', 'Close InTruth');

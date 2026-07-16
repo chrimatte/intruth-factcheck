@@ -24,6 +24,7 @@
   --rtfc-false: #f87171;
   --rtfc-misleading: #fbbf24;
   --rtfc-unverifiable: #a8a29e;
+  --rtfc-opinion: #c4b5fd;
   --rtfc-error: #fb7185;
   --rtfc-gutter: 16px;
   --rtfc-panel-x: 0px;
@@ -516,16 +517,40 @@
 
 .rtfc-claim-item {
   --rtfc-state-color: var(--rtfc-unverifiable);
-  display: grid;
-  grid-template-columns: 12px minmax(0, 1fr) auto;
-  align-items: start;
-  column-gap: 6px;
-  padding: 10px 0 9px;
   border-bottom: 2px solid color-mix(in srgb, var(--rtfc-state-color) 58%, var(--rtfc-line-soft));
 }
 
-.rtfc-claim-item:first-child {
+.rtfc-claim-link {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 16px minmax(0, 1fr) auto 8px;
+  align-items: start;
+  column-gap: 6px;
+  padding: 10px 0 9px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+
+.rtfc-claim-item:first-child .rtfc-claim-link {
   padding-top: 7px;
+}
+
+.rtfc-claim-link:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--rtfc-state-color) 7%, transparent);
+}
+
+.rtfc-claim-link:hover:not(:disabled) .rtfc-claim-open,
+.rtfc-claim-link:focus-visible .rtfc-claim-open {
+  transform: translateX(2px);
+}
+
+.rtfc-claim-link:disabled {
+  cursor: default;
 }
 
 .rtfc-claim-item--checking { --rtfc-state-color: var(--rtfc-muted); }
@@ -534,6 +559,7 @@
 .rtfc-claim-item--false { --rtfc-state-color: var(--rtfc-false); }
 .rtfc-claim-item--misleading { --rtfc-state-color: var(--rtfc-misleading); }
 .rtfc-claim-item--unverifiable { --rtfc-state-color: var(--rtfc-unverifiable); }
+.rtfc-claim-item--opinion { --rtfc-state-color: var(--rtfc-opinion); }
 .rtfc-claim-item--error { --rtfc-state-color: var(--rtfc-error); }
 
 .rtfc-claim-number {
@@ -564,6 +590,14 @@
   letter-spacing: 0.025em;
   line-height: 1.35;
   white-space: nowrap;
+}
+
+.rtfc-claim-open {
+  color: var(--rtfc-state-color);
+  font-size: 17px;
+  font-weight: 500;
+  line-height: 1.05;
+  transition: transform 160ms ease;
 }
 
 /* Verdict feed */
@@ -614,17 +648,39 @@
   animation: rtfc-enter 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
+.rtfc-verdict:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--rtfc-state-color) 72%, var(--rtfc-text));
+  outline-offset: 2px;
+}
+
+.rtfc-verdict--targeted::after {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 0 transparent;
+  content: '';
+  pointer-events: none;
+  animation: rtfc-target-highlight 1100ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
 .rtfc-verdict--checking { --rtfc-state-color: var(--rtfc-muted); }
 .rtfc-verdict--true { --rtfc-state-color: var(--rtfc-true); }
 .rtfc-verdict--subtrue { --rtfc-state-color: var(--rtfc-subtrue); }
 .rtfc-verdict--false { --rtfc-state-color: var(--rtfc-false); }
 .rtfc-verdict--misleading { --rtfc-state-color: var(--rtfc-misleading); }
 .rtfc-verdict--unverifiable { --rtfc-state-color: var(--rtfc-unverifiable); }
+.rtfc-verdict--opinion { --rtfc-state-color: var(--rtfc-opinion); }
 .rtfc-verdict--error { --rtfc-state-color: var(--rtfc-error); }
 
 @keyframes rtfc-enter {
   from { opacity: 0; transform: translateY(5px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes rtfc-target-highlight {
+  0% { box-shadow: inset 0 0 0 0 transparent; }
+  24% { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--rtfc-state-color) 58%, transparent); }
+  100% { box-shadow: inset 0 0 0 0 transparent; }
 }
 
 .rtfc-verdict-topline {
@@ -660,6 +716,7 @@
 .rtfc-badge--false { color: var(--rtfc-false); }
 .rtfc-badge--misleading { color: var(--rtfc-misleading); }
 .rtfc-badge--unverifiable { color: var(--rtfc-unverifiable); }
+.rtfc-badge--opinion { color: var(--rtfc-opinion); }
 .rtfc-badge--error { color: var(--rtfc-error); }
 
 .rtfc-confidence,
@@ -1000,13 +1057,18 @@ a.rtfc-source-title:hover {
     min-height: 56px;
   }
 
-  .rtfc-claim-item {
-    grid-template-columns: 12px minmax(0, 1fr);
+  .rtfc-claim-link {
+    grid-template-columns: 16px minmax(0, 1fr) 8px;
   }
 
   .rtfc-claim-state {
     grid-column: 2;
     padding-top: 0;
+  }
+
+  .rtfc-claim-open {
+    grid-column: 3;
+    grid-row: 1 / span 2;
   }
 
   .rtfc-verdicts-heading-row {

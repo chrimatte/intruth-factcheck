@@ -9,6 +9,9 @@
     'UNVERIFIABLE',
   ]);
   const VALID_CONFIDENCE = new Set(['HIGH', 'MEDIUM', 'LOW']);
+  const VERDICT_EXPLANATION_MAX_CHARS = 360;
+  const VERDICT_CITATION_QUOTE_MAX_CHARS = 240;
+  const VERDICT_MAX_CITATIONS = 3;
   const NEGATION_TOKENS = new Set([
     'no', 'not', 'never', 'none', 'neither', 'nor',
     'non', 'mai', 'nessuno', 'nessuna',
@@ -303,7 +306,7 @@
   function validateGroundedResult(input, sources) {
     const verdict = safeText(input?.verdict, 40).toUpperCase();
     const confidence = safeText(input?.confidence, 20).toUpperCase();
-    const explanation = safeText(input?.explanation, 1200);
+    const explanation = safeText(input?.explanation, VERDICT_EXPLANATION_MAX_CHARS);
     if (!VALID_VERDICTS.has(verdict) || !VALID_CONFIDENCE.has(confidence) || !explanation) {
       return { ok: false, reason: 'INVALID_SCHEMA' };
     }
@@ -311,9 +314,11 @@
     const byEvidenceId = new Map((sources || []).map(source => [source.evidenceId, source]));
     const citations = [];
     const seen = new Set();
-    for (const citation of Array.isArray(input?.citations) ? input.citations : []) {
+    const inputCitations = Array.isArray(input?.citations) ? input.citations : [];
+    for (const citation of inputCitations) {
+      if (citations.length >= VERDICT_MAX_CITATIONS) break;
       const evidenceId = safeText(citation?.evidenceId, 40);
-      const quote = safeText(citation?.quote, 400);
+      const quote = safeText(citation?.quote, VERDICT_CITATION_QUOTE_MAX_CHARS);
       const source = byEvidenceId.get(evidenceId);
       if (!source || !quote || seen.has(evidenceId)) continue;
       const evidenceText = `${source.title || ''}\n${source.snippet || ''}`
@@ -347,16 +352,24 @@
       verdict,
       // Search snippets are discovery evidence, not primary documents. They can
       // support a categorical result, but never HIGH confidence on their own.
-      confidence: verdict !== 'UNVERIFIABLE' && confidence === 'HIGH'
-        ? 'MEDIUM'
-        : confidence,
+      // UNVERIFIABLE describes an evidence gap, not confidence that the claim is
+      // false, so it always carries the lowest factual-confidence label.
+      confidence: verdict === 'UNVERIFIABLE'
+        ? 'LOW'
+        : (confidence === 'HIGH' ? 'MEDIUM' : confidence),
       explanation,
-      citations: verdict === 'UNVERIFIABLE' ? [] : citations,
-      sources: verdict === 'UNVERIFIABLE' ? [] : citedSources,
+      // Keep any exact, validated citations for an abstention. They let the user
+      // inspect what was reviewed instead of turning every abstention into an
+      // opaque "no sources" card.
+      citations,
+      sources: citedSources,
     };
   }
 
   root.InTruthPipelineCore = Object.freeze({
+    VERDICT_EXPLANATION_MAX_CHARS,
+    VERDICT_CITATION_QUOTE_MAX_CHARS,
+    VERDICT_MAX_CITATIONS,
     safeText,
     tokenizeUnicode,
     normalizeClaimKey,

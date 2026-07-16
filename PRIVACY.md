@@ -9,9 +9,9 @@ InTruth runs as a browser extension and does not use a developer-operated backen
 | Data | Recipient | Purpose | Trigger |
 | --- | --- | --- | --- |
 | Active-tab audio | Deepgram | Streaming speech-to-text and speaker diarization | User starts a session |
-| Transcript excerpts and page context | Anthropic | Identify check-worthy factual claims | Final transcript segments arrive |
-| Claim-derived search query | Serper | Retrieve current web evidence | A claim is detected |
-| Claim and retrieved evidence | Anthropic | Produce an evidence-grounded result | Evidence retrieval completes and the session budget allows it |
+| Transcript excerpts and page context | Anthropic | Classify salient factual claims and opinions | Final transcript segments arrive |
+| Self-contained factual-claim search query | Serper | Retrieve current web evidence | A factual claim is detected; opinions bypass this stage |
+| Factual claim and retrieved evidence | Anthropic | Produce an evidence-grounded result | Evidence retrieval completes and the session budget allows it; opinions bypass this stage |
 
 The respective provider credential is sent only to that provider. The extension developer does not receive provider requests or credentials.
 

@@ -17,6 +17,7 @@ const SESSION_STATE_KEY = 'intruth.activeSession.v2';
 const ACTIVE_TAB = {
   id: 42,
   url: 'https://www.youtube.com/watch?v=test-video',
+  title: '(188) Test video - YouTube',
 };
 
 function clone(value) {
@@ -284,6 +285,54 @@ test('transcript splitting preserves decimal and dotted-date tokens', async () =
   ]);
 });
 
+test('prompts classify opinions, preserve governing negation, and enforce evidence boundaries', () => {
+  assert.match(workerSource, /statementType:/);
+  assert.match(workerSource, /FACTUAL: an atomic, specific assertion/);
+  assert.match(workerSource, /The message of the Holocaust is never again not just for Jews/);
+  assert.match(workerSource, /"X does not say \[P\]" never licenses P/);
+  assert.match(workerSource, /TRUE: the evidence directly supports every material part/);
+  assert.match(workerSource, /SUBSTANTIALLY TRUE: the central assertion is supported/);
+  assert.match(workerSource, /only repeats the same speaker's statement/);
+  assert.match(workerSource, /VERDICT_MAX_OUTPUT_TOKENS = 640/);
+});
+
+test('extraction rejects a factual-looking clause cut out of governing negation', async () => {
+  const harness = loadWorker();
+  await harness.ready();
+  const sentence = "The convention doesn't say you can wait for genocide to happen.";
+  const truncatedInput = {
+    claims: [{
+      statementType: 'FACTUAL',
+      claim: 'You can wait for genocide to happen.',
+      sourceQuotes: [{
+        sourceSentenceId: 'U1',
+        quote: 'you can wait for genocide to happen',
+      }],
+    }],
+  };
+  const preservedInput = {
+    claims: [{
+      statementType: 'FACTUAL',
+      claim: sentence,
+      sourceQuotes: [{ sourceSentenceId: 'U1', quote: sentence }],
+    }],
+  };
+  const batch = [{ id: 'U1', text: sentence }];
+
+  const truncated = vm.runInContext(
+    `validateExtractedClaims(${JSON.stringify(truncatedInput)}, ${JSON.stringify(batch)})`,
+    harness.sandbox
+  );
+  const preserved = vm.runInContext(
+    `validateExtractedClaims(${JSON.stringify(preservedInput)}, ${JSON.stringify(batch)})`,
+    harness.sandbox
+  );
+
+  assert.equal(truncated.length, 0);
+  assert.equal(preserved.length, 1);
+  assert.equal(preserved[0].claim, sentence);
+});
+
 test('failed START_CAPTURE rolls back media, overlay, storage, and public status', async () => {
   const hooks = {
     runtimeSend(message) {
@@ -435,6 +484,7 @@ test('terminal outbox is durable before delivery and retries a transient overlay
   let updateAttempts = 0;
   let persistedBeforeFirstSend = null;
   const anthropicBodies = [];
+  const serperBodies = [];
   const hooks = {
     tabSend(_tabId, message, state) {
       if (message.type === 'PING') {
@@ -468,6 +518,7 @@ test('terminal outbox is durable before delivery and retries a transient overlay
               name: toolName,
               input: {
                 claims: [{
+                  statementType: 'FACTUAL',
                   claim,
                   sourceQuotes: [{ sourceSentenceId: 'U1', quote: claim }],
                 }],
@@ -498,6 +549,7 @@ test('terminal outbox is durable before delivery and retries a transient overlay
         });
       }
       assert.match(url, /serper\.dev/);
+      serperBodies.push(JSON.parse(options.body));
       return jsonResponse({
         organic: [{
           link: 'https://statistics.example/report',
@@ -546,6 +598,18 @@ test('terminal outbox is durable before delivery and retries a transient overlay
     anthropicBodies.map(body => body.model),
     ['claude-haiku-4-5-20251001', 'claude-haiku-4-5-20251001']
   );
+  assert.deepEqual(anthropicBodies.map(body => body.max_tokens), [700, 640]);
+  assert.equal(
+    anthropicBodies[1].tools[0].input_schema.properties.explanation.maxLength,
+    360
+  );
+  assert.equal(
+    anthropicBodies[1].tools[0].input_schema.properties.citations.maxItems,
+    3
+  );
+  assert.equal(serperBodies.length, 1);
+  assert.equal(serperBodies[0].q, claim);
+  assert.equal(serperBodies[0].q.includes('Test video'), false);
   const status = await harness.message({ type: 'GET_STATUS' });
   assert.equal(status.metrics.anthropicRequests, 2);
   assert.equal(status.metrics.extractionRequests, 1);
@@ -580,6 +644,7 @@ test('balanced mode extracts Italian claims with Haiku and verifies them with So
               name: toolName,
               input: {
                 claims: [{
+                  statementType: 'FACTUAL',
                   claim,
                   sourceQuotes: [{ sourceSentenceId: 'U1', quote: claim }],
                 }],
@@ -652,6 +717,72 @@ test('balanced mode extracts Italian claims with Haiku and verifies them with So
   assert.equal(extractionPayload.language_name, 'Italian');
   assert.equal(anthropicBodies[0].thinking, undefined);
   assert.deepEqual(anthropicBodies[1].thinking, { type: 'disabled' });
+
+  const stopped = await harness.message(
+    { type: 'STOP_FACTCHECK', sessionId },
+    popupSender()
+  );
+  assert.equal(stopped.ok, true);
+});
+
+test('opinions are delivered locally without Serper or evidence-verification calls', async () => {
+  const opinion = 'The message of the Holocaust is never again not just for Jews, but for anyone.';
+  const providerCalls = [];
+  const hooks = {
+    fetch(url, options) {
+      providerCalls.push({ url, body: JSON.parse(options.body) });
+      assert.match(url, /anthropic\.com/);
+      const body = providerCalls.at(-1).body;
+      assert.equal(body.tools[0].name, 'emit_claims');
+      return jsonResponse({
+        usage: { input_tokens: 600, output_tokens: 40 },
+        content: [{
+          type: 'tool_use',
+          name: 'emit_claims',
+          input: {
+            claims: [{
+              statementType: 'OPINION',
+              claim: opinion,
+              sourceQuotes: [{ sourceSentenceId: 'U1', quote: opinion }],
+            }],
+          },
+        }],
+      });
+    },
+  };
+  const harness = loadWorker({ hooks });
+  await harness.ready();
+  const sessionId = 'session_opinion_bypass';
+  await startSession(harness, sessionId);
+
+  const queued = await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    text: `${opinion} Context two. Context three. Context four. Context five. Context six.`,
+    isFinal: true,
+    confidence: 0.99,
+  }, offscreenSender());
+  assert.equal(queued.queued, true);
+
+  await eventually(() => harness.state.tabMessages.some(entry => (
+    entry.message.type === 'NEW_VERDICT' &&
+    entry.message.results?.some(result => result.verdict === 'OPINION')
+  )), 'opinion classification was not delivered');
+
+  assert.equal(providerCalls.length, 1, 'opinion triggered a paid evidence-stage request');
+  assert.equal(providerCalls[0].body.tools[0].name, 'emit_claims');
+  assert.equal(
+    harness.state.tabMessages.some(entry => entry.message.type === 'UPDATE_VERDICTS'),
+    false
+  );
+  const status = await harness.message({ type: 'GET_STATUS' });
+  assert.equal(status.metrics.claimsDetected, 1);
+  assert.equal(status.metrics.factualClaimsDetected, 0);
+  assert.equal(status.metrics.opinionsDetected, 1);
+  assert.equal(status.metrics.claimsCompleted, 1);
+  assert.equal(status.metrics.anthropicRequests, 1);
+  assert.equal(status.metrics.extractionRequests, 1);
+  assert.equal(status.metrics.verificationRequests, 0);
 
   const stopped = await harness.message(
     { type: 'STOP_FACTCHECK', sessionId },

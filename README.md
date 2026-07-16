@@ -1,6 +1,6 @@
 # InTruth
 
-InTruth is a Chrome extension that detects check-worthy claims in supported videos and verifies them against current web evidence while the video is playing.
+InTruth is a Chrome extension that detects check-worthy statements in supported videos, marks opinions as opinions, and verifies factual claims against current web evidence while the video is playing.
 
 This fork is an evidence-first reliability release. A detected claim is shown as **checking**, never as a factual verdict. It becomes `TRUE`, `SUBSTANTIALLY TRUE`, `FALSE`, or `MISLEADING` only after the evidence pass completes. Missing, conflicting, or failed evidence produces an explicit `UNVERIFIABLE` or error state instead of silently preserving a model guess.
 
@@ -11,8 +11,10 @@ This fork is an evidence-first reliability release. A detected claim is shown as
 ```mermaid
 flowchart LR
   A["Active-tab audio"] -->|"user starts capture"| B["Deepgram transcription"]
-  B --> C["Haiku claim extraction"]
-  C --> D["Serper evidence search"]
+  B --> C["Haiku statement classification"]
+  C --> G{"Factual claim?"}
+  G -->|"No — opinion"| F
+  G -->|"Yes"| D["Serper evidence search"]
   D --> E["Haiku or Sonnet evidence evaluation"]
   E --> F["Accessible overlay with cited sources"]
 ```
@@ -24,7 +26,7 @@ The extension uses immutable session and claim IDs so late network responses can
 - Chrome 116 or later using Manifest V3
 - YouTube and Jubilee pages listed in [`manifest.json`](realtime-factcheck/manifest.json)
 - Bring your own Anthropic, Deepgram, and Serper API keys
-- Live transcript, speaker labels, check-worthy claim detection, evidence-linked verdicts, local HTML report export, and visible per-session usage estimates
+- Live transcript, speaker labels, check-worthy statement detection, explicit opinion labels, evidence-linked factual verdicts, local HTML report export, and visible per-session usage estimates
 - No developer-operated relay server and no analytics or telemetry
 
 The language selector controls transcription. `Auto · multilingual` uses Deepgram Nova-3 multilingual streaming; selecting a specific language can improve accuracy for single-language content. Retrieval quality, speaker diarization, and model accuracy vary by language, audio quality, topic, and provider support.
@@ -33,7 +35,9 @@ The language selector controls transcription. `Auto · multilingual` uses Deepgr
 
 The default **Efficient** profile uses Claude Haiku 4.5 for both candidate extraction and evidence evaluation. **Balanced** still uses Haiku for the high-volume extraction stage and reserves Claude Sonnet 5 for claims that already have usable search evidence. The extension never needs Sonnet merely to decide that a transcript window contains no check-worthy claim.
 
-Transcript windows are batched adaptively, recent context is bounded, and duplicate claim text is handled locally rather than sent back to the model. The overlay reports analyzed transcript passages, detected claims, Anthropic requests, and an estimated Anthropic cost. New claims and verdicts stay at the top of their sections and use distinct state colors plus text labels, so color is never the only signal. A configurable `$0.25`, `$0.50`, or `$1.00` session guard pauses new AI analysis at the limit while leaving the transcript active. Estimates use versioned public token prices and may differ from the provider invoice; Deepgram and Serper charges are separate.
+Transcript windows are batched adaptively, recent context is bounded, and duplicate statement text is handled locally rather than sent back to the model. Salient opinions are labeled `OPINION` and do not trigger Serper or a second Anthropic evidence-verification request. Factual explanations are capped at two short sentences and 360 characters, with at most three short exact citations and a 640-token verification output budget. Actual provider cost still depends on input length and usage.
+
+The overlay reports analyzed transcript passages, factual claims, opinions, Anthropic requests, and an estimated Anthropic cost. New statements and results stay at the top, use distinct colors plus text labels, and each statement row can be clicked to focus its associated result. A configurable `$0.25`, `$0.50`, or `$1.00` session guard pauses new AI analysis at the limit while leaving the transcript active. Estimates use versioned public token prices and may differ from the provider invoice; Deepgram and Serper charges are separate.
 
 Prompt caching is not forced. Haiku 4.5 currently requires a stable prefix of at least 4,096 tokens, much longer than InTruth's compact extraction prompt, so padding requests merely to qualify would waste tokens. Anthropic's asynchronous Batch API is likewise unsuitable for live verdicts.
 
@@ -64,7 +68,7 @@ During an active session:
 
 - tab audio is sent to Deepgram for transcription;
 - transcript context and extracted evidence are sent to Anthropic for claim extraction and evaluation;
-- claim-derived search queries are sent to Serper;
+- self-contained factual-claim search queries are sent to Serper; opinions are not;
 - cited results remain in the page overlay until it is removed, and a report is downloaded only on user request.
 
 Chrome's memory-backed session storage temporarily keeps a bounded recovery/outbox record and aggregate token/cost counters for the active session. It may contain pending claims, short transcript source quotes, experimental lexical markers, and undelivered cited results; it is restricted to trusted extension contexts and cleared during normal stop or failed-start cleanup. See [`PRIVACY.md`](PRIVACY.md) for exact retention and failure-case details.
@@ -73,7 +77,7 @@ The project developer does not receive these requests. Provider retention and tr
 
 ## Reliability boundaries
 
-InTruth deliberately abstains when it cannot support a categorical result. Even a cited verdict can be wrong because a transcript may contain an incorrect name, number, or negation; a search snippet may omit crucial context; a source may be stale or unreliable; or a model may misunderstand the evidence.
+InTruth deliberately abstains when it cannot support a categorical result. Opinions and interpretations receive an `OPINION` classification rather than a truth verdict. Even a cited factual verdict can be wrong because a transcript may contain an incorrect name, number, or negation; a search snippet may omit crucial context; a source may be stale or unreliable; or a model may misunderstand the evidence.
 
 Speaker delivery markers are experimental descriptive signals only. They do **not** measure truthfulness, deception, intent, or character and are kept separate from the factual verdict.
 

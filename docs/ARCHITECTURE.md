@@ -20,10 +20,14 @@ sequenceDiagram
   Offscreen->>Providers: tab audio to Deepgram
   Providers-->>Offscreen: final transcript + timing/confidence
   Offscreen-->>Worker: TRANSCRIPT_RESULT(sessionId)
-  Worker->>Providers: Haiku extracts candidate claims
-  Worker->>Providers: Serper retrieves evidence
-  Worker->>Providers: Haiku or Sonnet evaluates evidence
-  Worker-->>Page: claim/update(sessionId, claimId)
+  Worker->>Providers: Haiku classifies factual claims and opinions
+  alt factual claim
+    Worker->>Providers: Serper retrieves evidence
+    Worker->>Providers: Haiku or Sonnet evaluates evidence
+  else opinion
+    Worker-->>Page: terminal OPINION (no evidence request)
+  end
+  Worker-->>Page: statement/update(sessionId, claimId)
   User->>Popup: Stop
   Popup->>Worker: STOP_FACTCHECK
   Worker->>Offscreen: flush and close
@@ -43,7 +47,7 @@ sequenceDiagram
 2. Startup is transactional: every partial resource is cleaned up on failure.
 3. Every asynchronous event carries a session ID; every candidate claim carries a claim ID.
 4. A stale session may not mutate UI or current state.
-5. Candidate extraction never emits a categorical truth verdict.
+5. Statement extraction never emits a categorical truth verdict. Opinions become terminal `OPINION` results and never enter evidence retrieval.
 6. Every displayed candidate reaches a terminal state: grounded result, unverifiable, or explicit error.
 7. A categorical result requires usable retrieved evidence and citation IDs that map to displayed source metadata.
 8. Provider errors, empty retrieval, malformed model output, and low-confidence input fail closed.
@@ -59,7 +63,7 @@ sequenceDiagram
 
 Final transcript fragments are buffered until six utterances, about 60 Unicode tokens, or an idle deadline. Very small conversational fragments wait for a bounded 12-second maximum instead of causing a paid request after every pause or speaker turn. Each extraction receives at most four preceding context utterances and never receives the full list of claims already emitted; invariant-aware Unicode deduplication stays local for the whole session.
 
-Efficient mode routes extraction and grounded evaluation to pinned Claude Haiku 4.5. Balanced mode still extracts with Haiku but routes only evidence-bearing claims to Claude Sonnet 5. Low-ASR claims and claims with no usable search evidence become `UNVERIFIABLE` without a verdict-model call. Anthropic network timeouts are not retried automatically because a timed-out request may already have been accepted and billed.
+Efficient mode routes classification/extraction and grounded evaluation to pinned Claude Haiku 4.5. Balanced mode still classifies with Haiku but routes only evidence-bearing factual claims to Claude Sonnet 5. Salient opinions become local terminal results after classification and incur neither a Serper request nor a verdict-model call. Low-ASR claims and claims with no usable search evidence become `UNVERIFIABLE` without a verdict-model call. Anthropic network timeouts are not retried automatically because a timed-out request may already have been accepted and billed.
 
 The worker records provider-reported input, output, cache-write, and cache-read token categories. It estimates cost using prices versioned with the extension and exposes both the estimate and raw counters to the overlay. The number is a safety control, not an invoice; provider dashboards are authoritative.
 
@@ -71,6 +75,6 @@ Stop attempts cleanup even when cached state is incomplete. It first disables an
 
 ## Evidence contract
 
-Retrieved evidence is assigned stable IDs before it is sent for evaluation. The model may cite only those IDs. Parsed output must use an allowed verdict, bounded confidence, an explanation, and an array of valid evidence IDs. Quotes must occur exactly in the cited snippet, duplicate publisher domains are collapsed, and snippet-only categorical results cannot exceed `MEDIUM` confidence. The overlay receives metadata only for sources actually cited by the accepted result.
+Retrieved evidence is assigned stable IDs before it is sent for evaluation. The model may cite only those IDs. Parsed output must use an allowed verdict, bounded confidence, an explanation of at most 360 characters, and no more than three valid evidence IDs. Quotes must occur exactly in the cited snippet, duplicate publisher domains are collapsed, and snippet-only categorical results cannot exceed `MEDIUM` confidence. Validated citations can remain attached to an `UNVERIFIABLE` result so the reviewed evidence is auditable. The overlay receives metadata only for sources actually cited by the accepted result.
 
 This contract improves traceability but does not prove that a source entails the verdict. Future work should retrieve full documents, preserve exact evidence spans, rank source authority and freshness, and measure citation entailment on a maintained benchmark.

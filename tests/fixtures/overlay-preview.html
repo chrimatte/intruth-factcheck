@@ -9,6 +9,9 @@
     .stage { padding: 48px; max-width: 760px; }
     .stage h1 { font-size: clamp(32px, 7vw, 72px); line-height: 1; max-width: 10ch; }
     .stage p { color: #a8aaa5; max-width: 54ch; }
+    .qa-controls { display: flex; align-items: center; gap: 12px; margin-top: 24px; font-size: 12px; }
+    .qa-controls a { color: #93c5fd; }
+    .qa-controls output { color: #a8aaa5; }
 
     /* Deliberately hostile host-page rules: none may leak into the closed shadow tree. */
     aside, button, input, h2, h3, h4, ol, ul, blockquote { all: unset !important; }
@@ -26,7 +29,11 @@
   <main class="stage">
     <p>Local visual regression fixture</p>
     <h1>Debate video page</h1>
-    <p>This neutral page exercises InTruth's live, checking, grounded, unverifiable, error, source, and speaker states.</p>
+    <p>This neutral page exercises InTruth's live, checking, grounded, opinion, unverifiable, error, source, and speaker states.</p>
+    <div class="qa-controls" aria-label="Fixture controls">
+      <a href="#navigation-probe" data-testid="navigate-opinion">Run statement navigation probe</a>
+      <output data-testid="navigation-status">Not run</output>
+    </div>
     <video aria-label="Preview video"></video>
   </main>
   <script>
@@ -79,7 +86,8 @@
       emit({
       type: 'PIPELINE_ACTIVITY', sessionId, status: 'verification',
       metrics: {
-        analysisWindows: 9, claimsDetected: 7, claimsCompleted: 6,
+        analysisWindows: 9, claimsDetected: 8, factualClaimsDetected: 7,
+        opinionsDetected: 1, claimsCompleted: 7,
         anthropicRequests: 9, estimatedCostUsd: 0.0384,
         analysisMode: 'efficient', sessionBudgetUsd: 0.5
       }
@@ -144,6 +152,15 @@
       type: 'NEW_VERDICT', sessionId,
       results: [{ sessionId, claimId: 'claim-misleading', claim: 'The revised figure proves the policy had no effect.', status: 'COMPLETE', verdict: 'MISLEADING', pending: false, confidence: 'MEDIUM', explanation: 'The figure is accurate, but it does not establish the causal conclusion in the statement.' }]
       });
+      emit({
+      type: 'NEW_VERDICT', sessionId,
+      results: [{
+        sessionId, claimId: 'statement-opinion', statementType: 'OPINION',
+        claim: 'The message of the Holocaust is never again not just for Jews, but for anyone.',
+        status: 'OPINION', verdict: 'OPINION', pending: false,
+        explanation: 'This is an opinion or interpretation, so no factual verdict applies.'
+      }]
+      });
       emit({ type: 'NEW_SPEAKER', sessionId, speakerId: 0, sample: 'We should look at the published annual table.' });
     }
 
@@ -163,8 +180,29 @@
       },
       tamperHost() {
         document.getElementById('intruth-extension-root')?.style.setProperty('display', 'none', 'important');
+      },
+      navigateToOpinion() {
+        const record = claimRecords.get('statement-opinion');
+        record?.bullet?.querySelector('[data-action="open-verdict"]')?.click();
+        return Boolean(record);
       }
     };
+
+    document.querySelector('[data-testid="navigate-opinion"]').addEventListener('click', (event) => {
+      event.preventDefault();
+      const found = window.__intruthPreview.navigateToOpinion();
+      setTimeout(() => {
+        const record = claimRecords.get('statement-opinion');
+        const body = panel?.querySelector('#rtfc-body');
+        const status = document.querySelector('[data-testid="navigation-status"]');
+        status.textContent = JSON.stringify({
+          found,
+          focused: panelRoot?.activeElement === record?.card,
+          scrolled: Number(body?.scrollTop || 0) > 0,
+          highlighted: record?.card?.classList.contains('rtfc-verdict--targeted') === true
+        });
+      }, 80);
+    });
   </script>
 </body>
 </html>

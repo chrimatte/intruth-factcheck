@@ -120,7 +120,7 @@ test("pipeline activity makes empty analysis and estimated cost visible", async 
   assert.match(source, /claims_rejected\s*:/);
   assert.match(source, /budget_reached\s*:/);
   assert.match(source, /estimatedCostUsd/);
-  assert.match(source, /'No claim detected'/);
+  assert.match(source, /'No statement detected'/);
 });
 
 test("overlay content follows one shared gutter and the claim reset cannot remove it", async () => {
@@ -177,14 +177,14 @@ test("empty states have stable indentation and concise, distinct status copy", a
   }
 
   assert.match(source, />Analysis active<\/span>/);
-  assert.match(source, /listening: 'Listening for claims'/);
-  assert.match(source, /<strong>Listening for claims<\/strong>/);
+  assert.match(source, /listening: 'Listening for statements'/);
+  assert.match(source, /<strong>Listening for statements<\/strong>/);
   assert.match(source, /0 passages · 0 claims/);
   assert.doesNotMatch(source, /0 windows · 0 claims/);
-  assert.match(source, /<strong>No claims yet<\/strong>/);
-  assert.match(source, /Factual statements will appear here when they are ready to verify\./);
-  assert.match(source, /<strong>No verdicts yet<\/strong>/);
-  assert.match(source, /Evidence-backed results will appear after a claim is checked\./);
+  assert.match(source, /<strong>No statements yet<\/strong>/);
+  assert.match(source, /Factual claims and clearly marked opinions will appear here\./);
+  assert.match(source, /<strong>No results yet<\/strong>/);
+  assert.match(source, /Evidence verdicts and opinion labels will appear here\./);
 });
 
 test("claim states remain color-distinct and newest results render first", async () => {
@@ -193,7 +193,7 @@ test("claim states remain color-distinct and newest results render first", async
     readFile(overlayPath, "utf8"),
   ]);
 
-  const colorNames = ["true", "subtrue", "false", "misleading", "unverifiable", "error"];
+  const colorNames = ["true", "subtrue", "false", "misleading", "unverifiable", "opinion", "error"];
   const colors = colorNames.map((name) => {
     const match = css.match(new RegExp(`--rtfc-${name}\\s*:\\s*([^;]+)`));
     assert.ok(match, `missing color token for ${name}`);
@@ -208,11 +208,47 @@ test("claim states remain color-distinct and newest results render first", async
   assert.match(source, /TRUE: 'Supported'/);
   assert.match(source, /FALSE: 'Contradicted'/);
   assert.match(source, /UNVERIFIABLE: 'Not enough evidence'/);
+  assert.match(source, /OPINION: 'Opinion'/);
 
   assert.match(source, /verdictListEl\.prepend\(newCard\)/);
   assert.match(source, /claimFeedEl\.prepend\(item\)/);
   assert.doesNotMatch(source, /verdictListEl\.appendChild\(newCard\)/);
   assert.doesNotMatch(source, /claimFeedEl\.appendChild\(item\)/);
+});
+
+test("statement rows navigate accessibly to their associated result", async () => {
+  const [css, source] = await Promise.all([
+    readFile(overlayCssPath, "utf8"),
+    readFile(overlayPath, "utf8"),
+  ]);
+
+  assert.match(source, /<button type="button" class="rtfc-claim-link"/);
+  assert.match(source, /data-action="open-verdict"/);
+  assert.match(source, /link\.setAttribute\('aria-controls', record\.domId\)/);
+  assert.match(source, /article\.tabIndex = -1/);
+  assert.match(source, /focusClaimVerdict\(target\.dataset\.claimId\)/);
+  assert.match(source, /body\.scrollTo\(\{/);
+  assert.match(source, /prefers-reduced-motion: reduce/);
+  assert.match(source, /highlightVerdictCard\(record, newCard, highlightRemaining\)/);
+  assert.match(source, /navigationHighlightExpiresAt/);
+  assert.match(css, /\.rtfc-verdict--targeted::after/);
+  assert.match(css, /\.rtfc-claim-open/);
+});
+
+test("opinions are first-class, non-verdict results", async () => {
+  const [source, exportSource, fixture] = await Promise.all([
+    readFile(overlayPath, "utf8"),
+    readFile(new URL("../realtime-factcheck/src/content/session-export.js", import.meta.url), "utf8"),
+    readFile(fixturePath, "utf8"),
+  ]);
+
+  assert.match(source, /'OPINION'/);
+  assert.match(source, /View opinion classification/);
+  assert.match(source, /Opinion identified/);
+  assert.match(exportSource, /Opinion — no evidence search or factual verdict was requested\./);
+  assert.match(exportSource, /'OPINION'/);
+  assert.match(fixture, /statementType: 'OPINION'/);
+  assert.match(fixture, /The message of the Holocaust is never again not just for Jews/);
 });
 
 test("visual fixture exercises hostile page CSS and lifecycle probes", async () => {
@@ -223,7 +259,10 @@ test("visual fixture exercises hostile page CSS and lifecycle probes", async () 
   assert.match(fixture, /hostUsesClosedShadowRoot/);
   assert.match(fixture, /removeHost\(\)/);
   assert.match(fixture, /tamperHost\(\)/);
+  assert.match(fixture, /navigateToOpinion\(\)/);
+  assert.match(fixture, /data-testid="navigation-status"/);
   assert.match(fixture, /setProperty\('display', 'none', 'important'\)/);
   assert.match(fixture, /ping\(\)/);
   assert.match(fixture, /fixtureState !== 'empty'/);
+  assert.match(fixture, /opinionsDetected: 1/);
 });

@@ -75,6 +75,9 @@ function logVerdict(result) {
     secondsElapsed: sessionStartTime ? Math.round((Date.now() - sessionStartTime) / 1000) : 0,
     videoTimestamp: String(result._timestamp || ''),
     claim: String(result.claim),
+    statementType: String(
+      result.statementType || (state === 'OPINION' ? 'OPINION' : 'FACTUAL')
+    ).toUpperCase(),
     verdict: state || 'UNVERIFIABLE',
     confidence: String(result.confidence || ''),
     explanation: String(result.explanation || result.error || ''),
@@ -139,7 +142,7 @@ function formatElapsed(secondsElapsed) {
 
 function exportHTMLReport() {
   if (!sessionLog.length) {
-    return { ok: false, error: 'No completed claims are available to export yet.' };
+    return { ok: false, error: 'No completed statements are available to export yet.' };
   }
 
   const pageTitle = document.title || 'Fact-check session';
@@ -152,6 +155,7 @@ function exportHTMLReport() {
     if (normalized === 'SUBSTANTIALLY TRUE') return 'subtrue';
     if (normalized === 'FALSE') return 'false';
     if (normalized === 'MISLEADING') return 'misleading';
+    if (normalized === 'OPINION') return 'opinion';
     if (normalized === 'ERROR') return 'error';
     return 'unverifiable';
   };
@@ -168,7 +172,9 @@ function exportHTMLReport() {
 
   const claimsHTML = [...speakerGroups.entries()].map(([speaker, claims]) => {
     const cards = claims.map(({ entry, index }) => {
-      const sourcesHTML = entry.sources.length
+      const sourcesHTML = entry.verdict === 'OPINION'
+        ? '<p class="no-sources">Opinion — no evidence search or factual verdict was requested.</p>'
+        : entry.sources.length
         ? '<ul class="sources" aria-label="Evidence sources">' + entry.sources.map((source, sourceIndex) => {
             const href = safeReportHref(source.url);
             const title = source.title || source.domain || `Source ${sourceIndex + 1}`;
@@ -187,12 +193,12 @@ function exportHTMLReport() {
       const time = entry.videoTimestamp || formatElapsed(entry.secondsElapsed);
       return '<article class="claim-card">' +
         '<div class="claim-kicker">' +
-          '<span>Claim ' + (index + 1) + '</span>' +
+          '<span>' + (entry.verdict === 'OPINION' ? 'Opinion ' : 'Claim ') + (index + 1) + '</span>' +
           '<span class="timestamp">' + escapeHtml(time) + '</span>' +
         '</div>' +
         '<div class="verdict-row">' +
           '<span class="verdict ' + verdictClass(entry.verdict) + '">' + escapeHtml(entry.verdict) + '</span>' +
-          (entry.confidence ? '<span class="confidence">' + escapeHtml(entry.confidence) + ' confidence</span>' : '') +
+          (entry.confidence ? '<span class="confidence">' + escapeHtml(entry.confidence) + ' evidence confidence</span>' : '') +
         '</div>' +
         '<h3 dir="auto">' + escapeHtml(entry.claim) + '</h3>' +
         (entry.explanation ? '<p class="explanation" dir="auto">' + escapeHtml(entry.explanation) + '</p>' : '') +
@@ -201,12 +207,12 @@ function exportHTMLReport() {
     }).join('');
 
     return '<section class="speaker-section">' +
-      '<div class="speaker-heading"><h2>' + escapeHtml(speaker) + '</h2><span>' + claims.length + ' claim' + (claims.length === 1 ? '' : 's') + '</span></div>' +
+      '<div class="speaker-heading"><h2>' + escapeHtml(speaker) + '</h2><span>' + claims.length + ' statement' + (claims.length === 1 ? '' : 's') + '</span></div>' +
       cards +
     '</section>';
   }).join('');
 
-  const summaryOrder = ['TRUE', 'SUBSTANTIALLY TRUE', 'FALSE', 'MISLEADING', 'UNVERIFIABLE', 'ERROR'];
+  const summaryOrder = ['TRUE', 'SUBSTANTIALLY TRUE', 'FALSE', 'MISLEADING', 'UNVERIFIABLE', 'OPINION', 'ERROR'];
   const summaryHTML = summaryOrder.map((verdict) => {
     const count = sessionLog.filter((entry) => entry.verdict === verdict).length;
     return '<div class="summary-item"><strong class="' + verdictClass(verdict) + '">' + count + '</strong><span>' + escapeHtml(verdict) + '</span></div>';
@@ -222,10 +228,10 @@ function exportHTMLReport() {
     '.eyebrow{margin:0 0 6px;color:var(--muted);font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;}' +
     'h1{margin:0;font-size:32px;line-height:1.05;letter-spacing:-.035em;} .meta{display:grid;gap:3px;text-align:right;color:var(--muted);font-size:12px;}' +
     '.context{margin:18px 0 0;max-width:68ch;color:var(--muted);overflow-wrap:anywhere;}' +
-    '.summary{display:grid;grid-template-columns:repeat(6,1fr);margin:28px 0 44px;border-block:1px solid var(--line);}' +
+    '.summary{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));margin:28px 0 44px;border-block:1px solid var(--line);}' +
     '.summary-item{padding:14px 8px;text-align:center;border-right:1px solid var(--line);}.summary-item:last-child{border-right:0;}' +
     '.summary-item strong{display:block;font-size:22px;font-variant-numeric:tabular-nums}.summary-item span{display:block;color:var(--muted);font-size:10px;font-weight:700;letter-spacing:.04em;}' +
-    '.true{color:#166534}.subtrue{color:#0f766e}.false,.error{color:#991b1b}.misleading{color:#92400e}.unverifiable{color:#57534e}' +
+    '.true{color:#166534}.subtrue{color:#0f766e}.false,.error{color:#991b1b}.misleading{color:#92400e}.unverifiable{color:#57534e}.opinion{color:#6d28d9}' +
     '.speaker-section{margin-top:40px}.speaker-heading{display:flex;align-items:baseline;justify-content:space-between;border-bottom:1px solid var(--ink);padding-bottom:8px;margin-bottom:0;}' +
     '.speaker-heading h2{margin:0;font-size:18px;letter-spacing:-.015em}.speaker-heading span{color:var(--muted);font-size:12px;}' +
     '.claim-card{padding:22px 0;border-bottom:1px solid var(--line);break-inside:avoid;}.claim-kicker,.verdict-row{display:flex;align-items:center;gap:10px;}' +
@@ -236,15 +242,15 @@ function exportHTMLReport() {
     '.sources{list-style:none;margin:16px 0 0;padding:0;border-top:1px solid #e7e5e4}.sources li{padding:10px 0;border-bottom:1px solid #e7e5e4;}' +
     '.sources a,.source-title{color:#1d4ed8;font-weight:700;text-decoration:none}.sources a:hover{text-decoration:underline}.source-meta{display:block;color:var(--muted);font-size:11px;}' +
     '.sources p,.sources blockquote,.no-sources{margin:3px 0 0;color:var(--muted);font-size:12px}.sources blockquote{padding-left:10px;border-left:2px solid var(--line);font-style:italic}.no-sources{font-style:italic;}' +
-    '@media(max-width:700px){main{width:min(100% - 28px,860px);padding-top:32px}.report-header{grid-template-columns:1fr}.meta{text-align:left}.summary{grid-template-columns:repeat(3,1fr)}.summary-item:nth-child(3){border-right:0}}' +
+    '@media(max-width:700px){main{width:min(100% - 28px,860px);padding-top:32px}.report-header{grid-template-columns:1fr}.meta{text-align:left}.summary{grid-template-columns:repeat(2,1fr)}}' +
     '@media print{body{background:#fff}main{width:auto;padding:20px}.claim-card{break-inside:avoid}.summary{margin-bottom:28px}}' +
     '</style></head><body><main>' +
       '<header class="report-header"><div><p class="eyebrow">InTruth</p><h1>Session report</h1></div>' +
       '<div class="meta"><span>Exported ' + escapeHtml(exportDate) + '</span>' +
       (endedDate ? '<span>Session ended ' + escapeHtml(endedDate) + '</span>' : '<span>Session active at export</span>') +
-      '<span>' + sessionLog.length + ' completed claim' + (sessionLog.length === 1 ? '' : 's') + '</span></div></header>' +
+      '<span>' + sessionLog.length + ' completed statement' + (sessionLog.length === 1 ? '' : 's') + '</span></div></header>' +
       '<p class="context" dir="auto">' + escapeHtml(pageTitle) + '</p>' +
-      '<section class="summary" aria-label="Verdict summary">' + summaryHTML + '</section>' +
+      '<section class="summary" aria-label="Statement summary">' + summaryHTML + '</section>' +
       claimsHTML +
     '</main></body></html>';
 

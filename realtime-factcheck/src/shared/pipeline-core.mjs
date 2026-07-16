@@ -2,6 +2,9 @@ import './pipeline-core.js';
 
 const core = globalThis.InTruthPipelineCore;
 
+export const VERDICT_EXPLANATION_MAX_CHARS = core.VERDICT_EXPLANATION_MAX_CHARS;
+export const VERDICT_CITATION_QUOTE_MAX_CHARS = core.VERDICT_CITATION_QUOTE_MAX_CHARS;
+export const VERDICT_MAX_CITATIONS = core.VERDICT_MAX_CITATIONS;
 export const safeText = core.safeText;
 export const tokenizeUnicode = core.tokenizeUnicode;
 export const normalizeClaimKey = core.normalizeClaimKey;

@@ -2,7 +2,27 @@
 
 All notable changes are documented here. This project uses semantic versions for the checked-in extension.
 
-## [2.0.2] - Unreleased
+## [2.0.3] - Unreleased
+
+### Added
+
+- Salient opinions and interpretations now receive a first-class `OPINION` label and bypass Serper and the Anthropic evidence-verification stage.
+- Every statement row is an accessible control that focuses, scrolls to, and briefly highlights its associated result.
+
+### Changed
+
+- Evidence explanations are limited to two short sentences and 360 characters; citations are limited to three short exact excerpts, and the verification output budget is 640 tokens.
+- Extraction rejects unresolved references, fragments, trivial facts, unscoped absolutes, and embedded propositions that lose governing negation, attribution, quotation, or hypothetical context.
+- Evidence search uses only the self-contained factual claim instead of appending the source video's title to every query.
+- `TRUE` and `SUBSTANTIALLY TRUE` have explicit evidence boundaries, and a source repeating the speaker's own opinion cannot corroborate that opinion as fact.
+- Abstentions retain validated reviewed-source links for auditability and use low evidence confidence.
+
+### Fixed
+
+- A checking result replaced while targeted from the statement list keeps keyboard focus and its navigation highlight.
+- Opinion counts, labels, colors, and HTML report summaries are distinct from factual claims and verdicts.
+
+## [2.0.2] - 2026-07-16
 
 ### Changed
 

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  VERDICT_CITATION_QUOTE_MAX_CHARS,
+  VERDICT_EXPLANATION_MAX_CHARS,
+  VERDICT_MAX_CITATIONS,
   assessAsrConfidence,
   buildAnthropicToolRequest,
   canonicalPublisherDomain,
@@ -215,6 +218,65 @@ test("validated citations retain only cited sources and cap snippet-only confide
   assert.equal(result.confidence, "MEDIUM");
   assert.deepEqual(result.sources.map((source) => source.id), ["S1", "S2"]);
   assert.deepEqual(result.citations.map((citation) => citation.evidenceId), ["E1", "E2"]);
+});
+
+test("verdict copy and citation output remain compact", () => {
+  assert.equal(VERDICT_EXPLANATION_MAX_CHARS, 360);
+  assert.equal(VERDICT_CITATION_QUOTE_MAX_CHARS, 240);
+  assert.equal(VERDICT_MAX_CITATIONS, 3);
+
+  const repeatedEvidence = "A".repeat(300);
+  const compactResult = validateGroundedResult({
+    verdict: "TRUE",
+    confidence: "MEDIUM",
+    explanation: "E".repeat(500),
+    citations: [{ evidenceId: "E3", quote: repeatedEvidence }]
+  }, [{
+    id: "S3",
+    evidenceId: "E3",
+    url: "https://official.example/report",
+    title: "Official release",
+    domain: "official.example",
+    date: "2026-01-12",
+    snippet: repeatedEvidence
+  }]);
+
+  assert.equal(compactResult.ok, true);
+  assert.equal(compactResult.explanation.length, VERDICT_EXPLANATION_MAX_CHARS);
+  assert.equal(compactResult.citations[0].quote.length, VERDICT_CITATION_QUOTE_MAX_CHARS);
+});
+
+test("citation cap counts validated citations instead of raw candidates", () => {
+  const result = validateGroundedResult({
+    verdict: "TRUE",
+    confidence: "MEDIUM",
+    explanation: "The official excerpt confirms the figure.",
+    citations: [
+      { evidenceId: "UNKNOWN", quote: "invalid" },
+      { evidenceId: "E1", quote: "not present" },
+      { evidenceId: "UNKNOWN_2", quote: "invalid" },
+      { evidenceId: "E1", quote: "annual rate was 4.2 percent" }
+    ]
+  }, sources);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.verdict, "TRUE");
+  assert.deepEqual(result.citations.map((citation) => citation.evidenceId), ["E1"]);
+});
+
+test("unverifiable results keep reviewed sources without implying factual confidence", () => {
+  const result = validateGroundedResult({
+    verdict: "UNVERIFIABLE",
+    confidence: "HIGH",
+    explanation: "The excerpt confirms the date but not the unnamed subject.",
+    citations: [{ evidenceId: "E1", quote: "in December 2025" }]
+  }, sources);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.verdict, "UNVERIFIABLE");
+  assert.equal(result.confidence, "LOW");
+  assert.deepEqual(result.citations.map((citation) => citation.evidenceId), ["E1"]);
+  assert.deepEqual(result.sources.map((source) => source.id), ["S1"]);
 });
 
 test("one cited excerpt cannot retain HIGH confidence", () => {
