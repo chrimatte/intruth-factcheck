@@ -2,7 +2,27 @@
 
 All notable changes are documented here. This project uses semantic versions for the checked-in extension.
 
-## [2.0.3] - Unreleased
+## [2.0.4] - Unreleased
+
+### Added
+
+- Configured users now land on a compact capture Home; provider credentials, language, analysis profile, budget, and privacy consent live in a separate Settings view.
+- Popup behavior is covered by first-run, navigation, storage-failure, draft-preservation, start/stop, unsupported-page, and active-session tests.
+
+### Changed
+
+- Extraction selects at most two central statements per window in total, including at most one salient opinion, preferring claims that materially affect the thesis, causal chain, chronology, scale, or accountability.
+- Candidate validation rejects unresolved references, low-information archive fragments, and unnamed events before evidence search, while adjacent target speech may supply a missing subject or date without inventing content.
+- Uncertain names, numbers, negations, and acronyms are suppressed before Serper and verdict spending; extraction output and session request limits are lower.
+- Verification instructions treat evidence about a different entity, country, or period as irrelevant rather than contradictory and prohibit internal evidence labels in reader-facing explanations.
+
+### Fixed
+
+- Popup initialization cannot overwrite saved credentials, failed saves remain visible, and opening the privacy notice preserves the current draft first.
+- HTML reports are ordered by video timestamp instead of asynchronous provider-completion order.
+- Long verdict explanations end cleanly at a sentence or word boundary instead of being cut mid-word.
+
+## [2.0.3] - 2026-07-16
 
 ### Added
 

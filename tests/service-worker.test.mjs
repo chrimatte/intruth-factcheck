@@ -288,12 +288,18 @@ test('transcript splitting preserves decimal and dotted-date tokens', async () =
 test('prompts classify opinions, preserve governing negation, and enforce evidence boundaries', () => {
   assert.match(workerSource, /statementType:/);
   assert.match(workerSource, /FACTUAL: an atomic, specific assertion/);
+  assert.match(workerSource, /Return at most .* central statements/);
+  assert.match(workerSource, /usually return zero or one/);
+  assert.match(workerSource, /standalone search query with its subject/);
   assert.match(workerSource, /The message of the Holocaust is never again not just for Jews/);
   assert.match(workerSource, /"X does not say \[P\]" never licenses P/);
   assert.match(workerSource, /TRUE: the evidence directly supports every material part/);
   assert.match(workerSource, /SUBSTANTIALLY TRUE: the central assertion is supported/);
+  assert.match(workerSource, /a current population figure cannot/);
   assert.match(workerSource, /only repeats the same speaker's statement/);
+  assert.match(workerSource, /Never mention internal evidence labels/);
   assert.match(workerSource, /VERDICT_MAX_OUTPUT_TOKENS = 640/);
+  assert.match(workerSource, /MAX_CLAIMS_PER_BATCH = 2/);
 });
 
 test('extraction rejects a factual-looking clause cut out of governing negation', async () => {
@@ -331,6 +337,89 @@ test('extraction rejects a factual-looking clause cut out of governing negation'
   assert.equal(truncated.length, 0);
   assert.equal(preserved.length, 1);
   assert.equal(preserved[0].claim, sentence);
+});
+
+test('extraction rejects unresolved references and low-information archive fragments', async () => {
+  const harness = loadWorker();
+  await harness.ready();
+  const statements = [
+    'They smuggled in more advanced weapons from abroad.',
+    'All of this happened before 1948.',
+    'There were 700 Jewish residents in Hebron at the time.',
+    'Many arrests were made.',
+    'Police swooped on the secret headquarters of assassins and rebels.',
+    'The rebellion began with a general strike and later became armed.',
+  ];
+  for (const statement of statements) {
+    const batch = [{ id: 'U1', text: statement }];
+    const input = {
+      claims: [{
+        statementType: 'FACTUAL',
+        claim: statement,
+        sourceQuotes: [{ sourceSentenceId: 'U1', quote: statement }],
+      }],
+    };
+    const validated = vm.runInContext(
+      `validateExtractedClaims(${JSON.stringify(input)}, ${JSON.stringify(batch)})`,
+      harness.sandbox
+    );
+    assert.equal(validated.length, 0, statement);
+  }
+});
+
+test('extraction accepts a central statement resolved from adjacent target utterances', async () => {
+  const harness = loadWorker();
+  await harness.ready();
+  const batch = [
+    { id: 'U1', text: 'In 1929, violence reached Hebron.' },
+    { id: 'U2', text: 'There were 700 Jewish residents in Hebron.' },
+  ];
+  const claim = 'In 1929, there were 700 Jewish residents in Hebron.';
+  const input = {
+    claims: [{
+      statementType: 'FACTUAL',
+      claim,
+      sourceQuotes: [
+        { sourceSentenceId: 'U1', quote: 'In 1929' },
+        { sourceSentenceId: 'U2', quote: 'There were 700 Jewish residents in Hebron' },
+      ],
+    }],
+  };
+
+  const validated = vm.runInContext(
+    `validateExtractedClaims(${JSON.stringify(input)}, ${JSON.stringify(batch)})`,
+    harness.sandbox
+  );
+
+  assert.equal(validated.length, 1);
+  assert.equal(validated[0].claim, claim);
+  assert.deepEqual(Array.from(validated[0].sourceSentenceIds), ['U1', 'U2']);
+});
+
+test('extraction accepts explicit time anchors but rejects anchorless relative time', async () => {
+  const harness = loadWorker();
+  await harness.ready();
+  const statements = [
+    ['Shortly after World War II, the organization was founded.', 1],
+    ['Soon after, the organization was founded.', 0],
+    ['Shortly afterward, the organization was founded.', 0],
+  ];
+
+  for (const [statement, expectedLength] of statements) {
+    const batch = [{ id: 'U1', text: statement }];
+    const input = {
+      claims: [{
+        statementType: 'FACTUAL',
+        claim: statement,
+        sourceQuotes: [{ sourceSentenceId: 'U1', quote: statement }],
+      }],
+    };
+    const validated = vm.runInContext(
+      `validateExtractedClaims(${JSON.stringify(input)}, ${JSON.stringify(batch)})`,
+      harness.sandbox
+    );
+    assert.equal(validated.length, expectedLength, statement);
+  }
 });
 
 test('failed START_CAPTURE rolls back media, overlay, storage, and public status', async () => {
@@ -598,7 +687,7 @@ test('terminal outbox is durable before delivery and retries a transient overlay
     anthropicBodies.map(body => body.model),
     ['claude-haiku-4-5-20251001', 'claude-haiku-4-5-20251001']
   );
-  assert.deepEqual(anthropicBodies.map(body => body.max_tokens), [700, 640]);
+  assert.deepEqual(anthropicBodies.map(body => body.max_tokens), [520, 640]);
   assert.equal(
     anthropicBodies[1].tools[0].input_schema.properties.explanation.maxLength,
     360
@@ -782,6 +871,66 @@ test('opinions are delivered locally without Serper or evidence-verification cal
   assert.equal(status.metrics.claimsCompleted, 1);
   assert.equal(status.metrics.anthropicRequests, 1);
   assert.equal(status.metrics.extractionRequests, 1);
+  assert.equal(status.metrics.verificationRequests, 0);
+
+  const stopped = await harness.message(
+    { type: 'STOP_FACTCHECK', sessionId },
+    popupSender()
+  );
+  assert.equal(stopped.ok, true);
+});
+
+test('uncertain ASR entities are suppressed before search and verdict spending', async () => {
+  const claim = 'David Groom migrated in 1906.';
+  const providerCalls = [];
+  const hooks = {
+    fetch(url, options) {
+      providerCalls.push({ url, body: JSON.parse(options.body) });
+      assert.match(url, /anthropic\.com/);
+      return jsonResponse({
+        usage: { input_tokens: 300, output_tokens: 30 },
+        content: [{
+          type: 'tool_use',
+          name: 'emit_claims',
+          input: {
+            claims: [{
+              statementType: 'FACTUAL',
+              claim,
+              sourceQuotes: [{ sourceSentenceId: 'U1', quote: claim }],
+            }],
+          },
+        }],
+      });
+    },
+  };
+  const harness = loadWorker({ hooks });
+  await harness.ready();
+  const sessionId = 'session_uncertain_entity';
+  await startSession(harness, sessionId);
+
+  await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    text: `${claim} Context two. Context three. Context four. Context five. Context six.`,
+    isFinal: true,
+    confidence: 0.9,
+    words: `${claim} Context two. Context three. Context four. Context five. Context six.`
+      .split(/\s+/u)
+      .map(word => ({
+        word,
+        confidence: word.startsWith('Groom') ? 0.42 : 0.94,
+      })),
+  }, offscreenSender());
+
+  await eventually(() => providerCalls.length === 1, 'extraction request did not complete');
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(providerCalls.length, 1);
+  assert.equal(
+    harness.state.tabMessages.some(entry => entry.message.type === 'NEW_VERDICT'),
+    false
+  );
+  const status = await harness.message({ type: 'GET_STATUS' });
+  assert.equal(status.metrics.claimsDetected, 0);
   assert.equal(status.metrics.verificationRequests, 0);
 
   const stopped = await harness.message(

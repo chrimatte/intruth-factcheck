@@ -35,7 +35,7 @@ The language selector controls transcription. `Auto · multilingual` uses Deepgr
 
 The default **Efficient** profile uses Claude Haiku 4.5 for both candidate extraction and evidence evaluation. **Balanced** still uses Haiku for the high-volume extraction stage and reserves Claude Sonnet 5 for claims that already have usable search evidence. The extension never needs Sonnet merely to decide that a transcript window contains no check-worthy claim.
 
-Transcript windows are batched adaptively, recent context is bounded, and duplicate statement text is handled locally rather than sent back to the model. Salient opinions are labeled `OPINION` and do not trigger Serper or a second Anthropic evidence-verification request. Factual explanations are capped at two short sentences and 360 characters, with at most three short exact citations and a 640-token verification output budget. Actual provider cost still depends on input length and usage.
+Transcript windows are batched adaptively, recent context is bounded, and duplicate statement text is handled locally rather than sent back to the model. Each window yields at most two central statements in total, including at most one salient opinion; scene-setting fragments, illustrative details, unresolved references, and low-confidence names or numbers are stopped before evidence search. Salient opinions are labeled `OPINION` and do not trigger Serper or a second Anthropic evidence-verification request. Factual explanations are capped at two short sentences and 360 characters, with at most three short exact citations and a 640-token verification output budget. Actual provider cost still depends on input length and usage.
 
 The overlay reports analyzed transcript passages, factual claims, opinions, Anthropic requests, and an estimated Anthropic cost. New statements and results stay at the top, use distinct colors plus text labels, and each statement row can be clicked to focus its associated result. A configurable `$0.25`, `$0.50`, or `$1.00` session guard pauses new AI analysis at the limit while leaving the transcript active. Estimates use versioned public token prices and may differ from the provider invoice; Deepgram and Serper charges are separate.
 
@@ -56,7 +56,8 @@ Then:
 3. Select **Load unpacked**.
 4. Choose the generated `dist/intruth` directory.
 5. Open a supported video page, open InTruth, enter the three provider keys, review the data disclosure, and grant consent.
-6. Select the transcript language, analysis profile, and session budget, then start the session.
+6. Save the setup. InTruth then opens its compact Home, where you can start or stop capture without exposing the credential fields.
+7. Use **Settings** whenever you need to change provider keys, transcript language, analysis profile, session budget, or privacy consent.
 
 The checked-in extension is also directly loadable from `realtime-factcheck`, but `dist/intruth` is the validated release artifact.
 

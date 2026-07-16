@@ -140,6 +140,59 @@ function formatElapsed(secondsElapsed) {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
+function parseVideoTimestamp(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return null;
+  const parts = text.split(':').map(Number);
+  if (!parts.length || parts.length > 3 || parts.some(part => !Number.isFinite(part) || part < 0)) {
+    return null;
+  }
+  return parts.reduce((total, part) => total * 60 + part, 0);
+}
+
+function parseElapsedSeconds(value) {
+  if (value === null || value === undefined || String(value).trim() === '') return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function chronologicalSessionEntries() {
+  const entries = sessionLog.map((entry, receivedIndex) => ({ entry, receivedIndex }));
+  const playbackOffsets = entries.flatMap(({ entry }) => {
+    const videoTime = parseVideoTimestamp(entry.videoTimestamp);
+    const elapsedTime = parseElapsedSeconds(entry.secondsElapsed);
+    return videoTime === null || elapsedTime === null ? [] : [videoTime - elapsedTime];
+  }).sort((left, right) => left - right);
+  const middle = Math.floor(playbackOffsets.length / 2);
+  const playbackOffset = !playbackOffsets.length
+    ? null
+    : playbackOffsets.length % 2
+      ? playbackOffsets[middle]
+      : (playbackOffsets[middle - 1] + playbackOffsets[middle]) / 2;
+
+  return entries
+    .map(item => {
+      const videoTime = parseVideoTimestamp(item.entry.videoTimestamp);
+      const elapsedTime = parseElapsedSeconds(item.entry.secondsElapsed);
+      return {
+        ...item,
+        timelineTime: videoTime ?? (
+          elapsedTime !== null && playbackOffset !== null
+            ? elapsedTime + playbackOffset
+            : null
+        ),
+      };
+    })
+    .sort((left, right) => {
+      if (left.timelineTime === null && right.timelineTime === null) {
+        return left.receivedIndex - right.receivedIndex;
+      }
+      if (left.timelineTime === null) return 1;
+      if (right.timelineTime === null) return -1;
+      return left.timelineTime - right.timelineTime || left.receivedIndex - right.receivedIndex;
+    });
+}
+
 function exportHTMLReport() {
   if (!sessionLog.length) {
     return { ok: false, error: 'No completed statements are available to export yet.' };
@@ -160,17 +213,21 @@ function exportHTMLReport() {
     return 'unverifiable';
   };
 
-  const speakerGroups = new Map();
-  sessionLog.forEach((entry, index) => {
+  const speakerSections = [];
+  chronologicalSessionEntries().forEach(({ entry }, index) => {
     const rawSpeaker = entry.speakerName;
     const speaker = rawSpeaker && !/^Speaker\s*\d+$/i.test(rawSpeaker) && rawSpeaker !== 'Other'
       ? rawSpeaker
       : 'Unknown speaker';
-    if (!speakerGroups.has(speaker)) speakerGroups.set(speaker, []);
-    speakerGroups.get(speaker).push({ entry, index });
+    let section = speakerSections.at(-1);
+    if (!section || section.speaker !== speaker) {
+      section = { speaker, claims: [] };
+      speakerSections.push(section);
+    }
+    section.claims.push({ entry, index });
   });
 
-  const claimsHTML = [...speakerGroups.entries()].map(([speaker, claims]) => {
+  const claimsHTML = speakerSections.map(({ speaker, claims }) => {
     const cards = claims.map(({ entry, index }) => {
       const sourcesHTML = entry.verdict === 'OPINION'
         ? '<p class="no-sources">Opinion — no evidence search or factual verdict was requested.</p>'

@@ -7,12 +7,15 @@ import {
   assessAsrConfidence,
   buildAnthropicToolRequest,
   canonicalPublisherDomain,
+  claimHasAsrSensitiveTokens,
   claimIsExtractiveFromQuotes,
   claimQuotePreservesInvariants,
+  compactTextAtBoundary,
   isExactTranscriptQuote,
   normalizeClaimKey,
   normalizeSource,
   safeText,
+  summarizeAsrConfidence,
   tokenizeUnicode,
   validateGroundedResult
 } from "../realtime-factcheck/src/shared/pipeline-core.mjs";
@@ -41,6 +44,20 @@ const sources = [
 test("safeText trims and bounds untrusted strings", () => {
   assert.equal(safeText("  abcdef  ", 4), "abcd");
   assert.equal(safeText({ value: "secret" }), "");
+});
+
+test("compact verdict copy ends at a sentence or word boundary", () => {
+  const first = "The historical source supports the date and named organization.";
+  const second = "The remaining material qualifier is not established by the excerpts and should not be inferred from a different period.";
+  assert.equal(compactTextAtBoundary(`${first} ${second}`, 80), first);
+
+  const wordBounded = compactTextAtBoundary(
+    "Evidence from the matching period supports the central assertion but leaves one secondary qualifier unresolved.",
+    74
+  );
+  assert.equal(wordBounded.endsWith("…"), true);
+  assert.equal(wordBounded.length <= 74, true);
+  assert.doesNotMatch(wordBounded, /qualif…$/);
 });
 
 test("Unicode tokenization preserves non-Latin claims", () => {
@@ -137,6 +154,59 @@ test("ASR confidence fails closed and uses a stricter threshold for sensitive cl
   assert.equal(assessAsrConfidence("The policy changed", [0.67]).sufficient, false);
   assert.equal(assessAsrConfidence("The rate was 4 percent", [0.77]).sufficient, false);
   assert.equal(assessAsrConfidence("The policy changed", []).sufficient, false);
+});
+
+test("ASR confidence checks claim words without penalizing unrelated noise", () => {
+  const words = [
+    { word: "David", confidence: 0.94 },
+    { word: "Groom", confidence: 0.42 },
+    { word: "migrated", confidence: 0.96 },
+    { word: "in", confidence: 0.97 },
+    { word: "1906", confidence: 0.98 },
+  ];
+  assert.ok(Math.abs(summarizeAsrConfidence(0.91, words) - 0.854) < 1e-12);
+  assert.equal(
+    assessAsrConfidence("David Groom migrated in 1906", [0.854], words, "en").asrConfidence,
+    0.42
+  );
+  assert.equal(
+    assessAsrConfidence("The policy changed", [0.85], [
+      { word: "policy", confidence: 0.94 },
+      { word: "changed", confidence: 0.95 },
+      { word: "um", confidence: 0.2 },
+    ], "en").sufficient,
+    true
+  );
+  assert.equal(claimHasAsrSensitiveTokens("David Groom migrated in 1906"), true);
+  assert.equal(claimHasAsrSensitiveTokens("David Groom migrated", "en"), true);
+  assert.equal(claimHasAsrSensitiveTokens("The IDF was formed in 1948"), true);
+  assert.equal(claimHasAsrSensitiveTokens("The policy changed"), false);
+  assert.equal(
+    claimHasAsrSensitiveTokens("Die Regierung änderte die Wirtschaftspolitik", "de"),
+    false
+  );
+  assert.equal(
+    claimHasAsrSensitiveTokens("Die Regierung änderte die Wirtschaftspolitik", "multi"),
+    false
+  );
+  assert.equal(
+    assessAsrConfidence(
+      "Die Regierung änderte die Wirtschaftspolitik",
+      [0.72],
+      [],
+      "de"
+    ).sufficient,
+    true
+  );
+  assert.equal(
+    assessAsrConfidence(
+      "Die Regierung änderte die Wirtschaftspolitik",
+      [0.72],
+      [],
+      "multi"
+    ).sufficient,
+    true
+  );
 });
 
 test("Sonnet 5 forced-tool requests disable thinking and omit sampling parameters", () => {

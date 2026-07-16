@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="popup.css"/>
 </head>
 <body>
-  <main class="popup" aria-labelledby="popupTitle">
+  <main class="popup" id="popup" aria-labelledby="popupTitle" aria-busy="true">
     <header class="header">
       <span class="logo-mark" aria-hidden="true"></span>
       <div class="header-copy">
@@ -17,125 +17,167 @@
           <span id="statusText">Checking current tab</span>
         </p>
       </div>
+      <button class="header-action" id="openSettings" type="button"
+              aria-controls="settingsView" hidden>Settings</button>
     </header>
 
     <div class="error-notice" id="errorNotice" role="alert" tabindex="-1" hidden></div>
 
-    <form id="configForm" novalidate>
-      <section class="config-section" id="keysSection" aria-labelledby="credentialsTitle">
-        <div class="section-heading">
-          <h2 id="credentialsTitle">Provider access</h2>
-          <span class="section-kicker">BYOK</span>
-        </div>
-
-        <div class="key-field">
-          <label class="key-label" for="anthropicKey">Anthropic API key</label>
-          <input class="key-input" id="anthropicKey" type="password" placeholder="Enter Anthropic key"
-                 autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="512"
-                 aria-describedby="anthropicHelp" required/>
-          <p class="field-help" id="anthropicHelp">Analyzes transcripts and claims.</p>
-        </div>
-
-        <div class="key-field">
-          <label class="key-label" for="deepgramKey">Deepgram API key</label>
-          <input class="key-input" id="deepgramKey" type="password" placeholder="Enter Deepgram key"
-                 autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="512"
-                 aria-describedby="deepgramHelp" required/>
-          <p class="field-help" id="deepgramHelp">Transcribes audio from the selected tab.</p>
-        </div>
-
-        <div class="key-field">
-          <label class="key-label" for="serperKey">Serper API key</label>
-          <input class="key-input" id="serperKey" type="password" placeholder="Enter Serper key"
-                 autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="512"
-                 aria-describedby="serperHelp" required/>
-          <p class="field-help" id="serperHelp">Searches the web for supporting evidence.</p>
-        </div>
-
-        <div class="key-field">
-          <label class="key-label" for="languageSelect">Transcript language</label>
-          <div class="language-row">
-            <span id="languageCode" class="language-code" aria-hidden="true">AUTO</span>
-            <select class="key-input key-select" id="languageSelect">
-              <option value="multi">Auto · multilingual</option>
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
-              <option value="de">German</option>
-              <option value="it">Italian</option>
-              <option value="pt">Portuguese</option>
-              <option value="nl">Dutch</option>
-              <option value="hi">Hindi</option>
-              <option value="ja">Japanese</option>
-              <option value="zh">Chinese</option>
-              <option value="ar">Arabic</option>
-              <option value="ko">Korean</option>
-              <option value="ru">Russian</option>
-              <option value="pl">Polish</option>
-              <option value="sv">Swedish</option>
-              <option value="tr">Turkish</option>
-            </select>
-          </div>
-        </div>
-      </section>
-
-      <section class="config-section" id="analysisSection" aria-labelledby="analysisTitle">
-        <div class="section-heading">
-          <h2 id="analysisTitle">Analysis controls</h2>
-          <span class="section-kicker">Cost guard</span>
-        </div>
-
-        <div class="key-field">
-          <label class="key-label" for="analysisMode">Analysis mode</label>
-          <select class="key-input key-select" id="analysisMode" aria-describedby="analysisModeHelp">
-            <option value="efficient">Efficient · Haiku 4.5</option>
-            <option value="balanced">Balanced · Haiku + Sonnet 5</option>
-          </select>
-          <p class="field-help" id="analysisModeHelp">Efficient uses Haiku for extraction and evidence. Balanced reserves Sonnet for evidence verdicts.</p>
-        </div>
-
-        <div class="key-field">
-          <label class="key-label" for="sessionBudgetUsd">Anthropic session budget</label>
-          <select class="key-input key-select" id="sessionBudgetUsd" aria-describedby="sessionBudgetHelp">
-            <option value="0.25">$0.25 estimated</option>
-            <option value="0.5" selected>$0.50 estimated</option>
-            <option value="1">$1.00 estimated</option>
-            <option value="0">No in-extension limit</option>
-          </select>
-          <p class="field-help" id="sessionBudgetHelp">New AI analysis pauses at the limit while transcription continues. Deepgram and Serper charges are separate.</p>
-        </div>
-      </section>
-
-      <section class="privacy-disclosure" aria-labelledby="privacyTitle">
-        <div class="section-heading">
-          <h2 id="privacyTitle">Before you start</h2>
-          <span class="privacy-badge">Data transfer</span>
-        </div>
-        <ul class="data-flow-list">
-          <li><strong>Tab audio</strong> is sent directly to Deepgram for live transcription.</li>
-          <li><strong>Transcripts and claims</strong> are sent to Anthropic for analysis.</li>
-          <li><strong>Claim search queries</strong> are sent to Serper to find evidence.</li>
-        </ul>
-        <p class="storage-note">Keys are stored locally in Chrome. Saving a key does not validate it; each provider accepts or rejects it when a request starts.</p>
-        <p class="cost-note">Using these APIs may incur charges. The session guard is an Anthropic estimate only; provider dashboards and account spend limits remain authoritative.</p>
-        <label class="consent-row" for="privacyConsent">
-          <input id="privacyConsent" type="checkbox" required/>
-          <span>I understand these transfers and agree to start the session.</span>
-        </label>
-        <div class="privacy-meta">
-          <a class="privacy-link" href="privacy.html" target="_blank" rel="noopener noreferrer">Read the privacy notice</a>
-          <span>Version 2026-07-16-v2</span>
-        </div>
-      </section>
+    <section class="popup-view home-view" id="homeView" aria-labelledby="homeTitle" hidden>
+      <div class="home-panel">
+        <p class="view-eyebrow" id="homeEyebrow">Ready on this tab</p>
+        <h2 class="home-title" id="homeTitle" tabindex="-1">Ready to fact-check</h2>
+        <p class="home-description" id="homeDescription">
+          Start live transcription, factual-claim checks, and clearly marked opinions.
+        </p>
+        <p class="preference-summary" id="preferenceSummary"></p>
+      </div>
 
       <p class="config-hint" id="configHint" role="status" aria-live="polite"></p>
-    </form>
 
-    <button class="toggle-btn" id="toggleBtn" type="button" disabled
-            aria-describedby="configHint" aria-pressed="false" aria-busy="false">
-      <span id="buttonLabel">Start fact-checking</span>
-      <span class="button-progress" aria-hidden="true"></span>
-    </button>
+      <button class="toggle-btn" id="toggleBtn" type="button" disabled
+              aria-describedby="configHint" aria-pressed="false" aria-busy="false">
+        <span id="buttonLabel">Start fact-checking</span>
+        <span class="button-progress" aria-hidden="true"></span>
+      </button>
+
+      <div class="home-footer">
+        <span>Provider access saved locally</span>
+        <a class="privacy-link" href="privacy.html" target="_blank" rel="noopener noreferrer">Privacy</a>
+      </div>
+    </section>
+
+    <section class="popup-view settings-view" id="settingsView" aria-labelledby="settingsTitle">
+      <div class="view-header">
+        <button class="back-button" id="settingsBack" type="button"
+                aria-controls="homeView" hidden>
+          <span aria-hidden="true">&#8592;</span>
+          <span id="settingsBackLabel">Home</span>
+        </button>
+        <div>
+          <p class="view-eyebrow" id="settingsEyebrow">First-time setup</p>
+          <h2 class="settings-title" id="settingsTitle" tabindex="-1">Connect providers</h2>
+          <p class="settings-intro" id="settingsIntro">
+            Add the three keys used for transcription, analysis, and evidence search.
+          </p>
+        </div>
+      </div>
+
+      <form id="configForm" novalidate>
+        <section class="config-section" id="keysSection" aria-labelledby="credentialsTitle">
+          <div class="section-heading">
+            <h3 id="credentialsTitle">Provider keys</h3>
+            <span class="section-kicker">BYOK</span>
+          </div>
+
+          <div class="key-field">
+            <label class="key-label" for="anthropicKey">Anthropic API key</label>
+            <input class="key-input" id="anthropicKey" type="password" placeholder="Enter Anthropic key"
+                   autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="512"
+                   aria-describedby="anthropicHelp" required/>
+            <p class="field-help" id="anthropicHelp">Analyzes transcripts and claims.</p>
+          </div>
+
+          <div class="key-field">
+            <label class="key-label" for="deepgramKey">Deepgram API key</label>
+            <input class="key-input" id="deepgramKey" type="password" placeholder="Enter Deepgram key"
+                   autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="512"
+                   aria-describedby="deepgramHelp" required/>
+            <p class="field-help" id="deepgramHelp">Transcribes audio from the selected tab.</p>
+          </div>
+
+          <div class="key-field">
+            <label class="key-label" for="serperKey">Serper API key</label>
+            <input class="key-input" id="serperKey" type="password" placeholder="Enter Serper key"
+                   autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="512"
+                   aria-describedby="serperHelp" required/>
+            <p class="field-help" id="serperHelp">Searches the web for supporting evidence.</p>
+          </div>
+        </section>
+
+        <section class="config-section" id="analysisSection" aria-labelledby="analysisTitle">
+          <div class="section-heading">
+            <h3 id="analysisTitle">Session preferences</h3>
+            <span class="section-kicker">Cost guard</span>
+          </div>
+
+          <div class="key-field">
+            <label class="key-label" for="languageSelect">Transcript language</label>
+            <div class="language-row">
+              <span id="languageCode" class="language-code" aria-hidden="true">AUTO</span>
+              <select class="key-input key-select" id="languageSelect">
+                <option value="multi">Auto · multilingual</option>
+                <option value="en">English</option>
+                <option value="es">Spanish</option>
+                <option value="fr">French</option>
+                <option value="de">German</option>
+                <option value="it">Italian</option>
+                <option value="pt">Portuguese</option>
+                <option value="nl">Dutch</option>
+                <option value="hi">Hindi</option>
+                <option value="ja">Japanese</option>
+                <option value="zh">Chinese</option>
+                <option value="ar">Arabic</option>
+                <option value="ko">Korean</option>
+                <option value="ru">Russian</option>
+                <option value="pl">Polish</option>
+                <option value="sv">Swedish</option>
+                <option value="tr">Turkish</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="key-field">
+            <label class="key-label" for="analysisMode">Analysis mode</label>
+            <select class="key-input key-select" id="analysisMode" aria-describedby="analysisModeHelp">
+              <option value="efficient">Efficient · Haiku 4.5</option>
+              <option value="balanced">Balanced · Haiku + Sonnet 5</option>
+            </select>
+            <p class="field-help" id="analysisModeHelp">Efficient minimizes model cost. Balanced reserves Sonnet for evidence verdicts.</p>
+          </div>
+
+          <div class="key-field">
+            <label class="key-label" for="sessionBudgetUsd">Anthropic session budget</label>
+            <select class="key-input key-select" id="sessionBudgetUsd" aria-describedby="sessionBudgetHelp">
+              <option value="0.25">$0.25 estimated</option>
+              <option value="0.5" selected>$0.50 estimated</option>
+              <option value="1">$1.00 estimated</option>
+              <option value="0">No in-extension limit</option>
+            </select>
+            <p class="field-help" id="sessionBudgetHelp">Pauses new Anthropic analysis at the estimate. Deepgram and Serper charges are separate.</p>
+          </div>
+        </section>
+
+        <section class="privacy-disclosure" aria-labelledby="privacyTitle">
+          <div class="section-heading">
+            <h3 id="privacyTitle">Privacy &amp; costs</h3>
+            <span class="privacy-badge">Data transfer</span>
+          </div>
+          <ul class="data-flow-list">
+            <li><strong>Tab audio</strong> is sent directly to Deepgram for live transcription.</li>
+            <li><strong>Transcripts and claims</strong> are sent to Anthropic for analysis.</li>
+            <li><strong>Claim search queries</strong> are sent to Serper to find evidence.</li>
+          </ul>
+          <p class="storage-note">Keys are stored locally in Chrome. Saving a key does not validate it; each provider accepts or rejects it when a request starts.</p>
+          <p class="cost-note">Using these APIs may incur charges. The session guard estimates Anthropic usage only; provider dashboards remain authoritative.</p>
+          <label class="consent-row" for="privacyConsent">
+            <input id="privacyConsent" type="checkbox" required/>
+            <span>I understand these transfers and agree to start sessions.</span>
+          </label>
+          <div class="privacy-meta">
+            <a class="privacy-link" id="privacyNoticeLink" href="privacy.html" target="_blank" rel="noopener noreferrer">Read the privacy notice</a>
+            <span>Version 2026-07-16-v2</span>
+          </div>
+        </section>
+
+        <p class="settings-hint" id="settingsHint" role="status" aria-live="polite"></p>
+
+        <button class="save-button" id="saveSettings" type="submit" aria-busy="false">
+          <span id="saveSettingsLabel">Save and continue</span>
+          <span class="button-progress" aria-hidden="true"></span>
+        </button>
+      </form>
+    </section>
   </main>
   <script src="popup.js"></script>
 </body>

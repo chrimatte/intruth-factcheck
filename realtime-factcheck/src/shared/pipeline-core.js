@@ -29,8 +29,9 @@
     'değil', 'yok', 'asla',
   ]);
   // Deepgram confidence is an ASR ranking signal, not a calibrated probability.
-  // Keep a stricter gate for numbers and negation, without discarding otherwise
-  // usable utterances merely because they contain a year or percentage.
+  // Keep a stricter gate for numbers, negation, acronyms, and named entities,
+  // without discarding otherwise usable utterances merely because they contain
+  // a year or percentage.
   const ASR_CONFIDENCE_THRESHOLD = 0.68;
   const ASR_SENSITIVE_CONFIDENCE_THRESHOLD = 0.78;
   const COMMON_SECOND_LEVEL_SUFFIXES = new Set([
@@ -84,6 +85,31 @@
 
   function safeText(value, maxLength = 2000) {
     return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
+  }
+
+  function compactTextAtBoundary(value, maxLength) {
+    const text = typeof value === 'string'
+      ? value.trim().replace(/\s+/gu, ' ')
+      : '';
+    if (!text || !Number.isInteger(maxLength) || maxLength < 2) return '';
+    if (text.length <= maxLength) return text;
+
+    const available = maxLength - 1;
+    const prefix = text.slice(0, available + 1);
+    const sentenceEnds = [...prefix.matchAll(/[.!?](?=\s|$)/gu)];
+    const sentenceEnd = sentenceEnds.at(-1)?.index;
+    if (Number.isInteger(sentenceEnd) && sentenceEnd >= Math.floor(maxLength * 0.5)) {
+      return prefix.slice(0, sentenceEnd + 1).trim();
+    }
+
+    const wordEnd = prefix.lastIndexOf(' ', available);
+    const cutAt = wordEnd >= Math.floor(maxLength * 0.55) ? wordEnd : available;
+    const compact = prefix
+      .slice(0, cutAt)
+      .trimEnd()
+      .replace(/[,:;\-–—]+$/u, '')
+      .trimEnd();
+    return compact ? `${compact}…` : '';
   }
 
   function tokenizeUnicode(text) {
@@ -202,22 +228,50 @@
     const wordAverage = wordValues.length
       ? wordValues.reduce((sum, value) => sum + value, 0) / wordValues.length
       : null;
-    const candidates = [overall, wordAverage].filter(value => value !== null);
-    return candidates.length ? Math.min(...candidates) : null;
+    // Fragment-local word confidence is more useful than the confidence for a
+    // larger utterance. Claim-specific words are checked separately below, so one
+    // unrelated low-confidence filler cannot suppress an otherwise clear claim.
+    return wordAverage ?? overall;
   }
 
-  function claimHasAsrSensitiveTokens(claim) {
+  function claimHasAsrSensitiveTokens(claim, language = '') {
     const text = String(claim || '').normalize('NFKC');
     if (/\p{N}/u.test(text)) return true;
-    return countNegationInvariants(text) > 0;
+    if (countNegationInvariants(text) > 0) return true;
+    if (/\b[\p{Lu}\p{N}]{2,}\b/u.test(text)) return true;
+    // German capitalizes ordinary nouns, so title case alone is not evidence of
+    // a named entity in German or in auto mode where the language is unknown.
+    const normalizedLanguage = String(language || '').toLocaleLowerCase();
+    if (normalizedLanguage === 'de' || normalizedLanguage === 'multi') return false;
+    const words = text.match(/[\p{L}\p{M}][\p{L}\p{M}'’.-]*/gu) || [];
+    return words.slice(1).some(word => /^\p{Lu}[\p{L}\p{M}'’.-]{2,}$/u.test(word));
   }
 
-  function assessAsrConfidence(claim, sentenceConfidences) {
+  function claimWordConfidence(claim, asrWords) {
+    const materialTokens = new Set(tokenizeUnicode(claim)
+      .filter(token => NEGATION_TOKENS.has(token) || !EXTRACTION_STOPWORDS.has(token)));
+    if (!materialTokens.size) return null;
+
+    const matchingValues = [];
+    for (const word of Array.isArray(asrWords) ? asrWords : []) {
+      const confidence = normalizeUnitConfidence(word?.confidence);
+      if (confidence === null) continue;
+      const wordTokens = tokenizeUnicode(word?.word || word?.punctuated_word || '');
+      if (wordTokens.some(token => materialTokens.has(token))) matchingValues.push(confidence);
+    }
+    return matchingValues.length ? Math.min(...matchingValues) : null;
+  }
+
+  function assessAsrConfidence(claim, sentenceConfidences, asrWords = [], language = '') {
     const values = (Array.isArray(sentenceConfidences) ? sentenceConfidences : [])
       .map(normalizeUnitConfidence)
       .filter(value => value !== null);
-    const asrConfidence = values.length ? Math.min(...values) : null;
-    const sensitive = claimHasAsrSensitiveTokens(claim);
+    const sentenceConfidence = values.length ? Math.min(...values) : null;
+    const matchedWordConfidence = claimWordConfidence(claim, asrWords);
+    const candidates = [sentenceConfidence, matchedWordConfidence]
+      .filter(value => value !== null);
+    const asrConfidence = candidates.length ? Math.min(...candidates) : null;
+    const sensitive = claimHasAsrSensitiveTokens(claim, language);
     const threshold = sensitive
       ? ASR_SENSITIVE_CONFIDENCE_THRESHOLD
       : ASR_CONFIDENCE_THRESHOLD;
@@ -306,7 +360,10 @@
   function validateGroundedResult(input, sources) {
     const verdict = safeText(input?.verdict, 40).toUpperCase();
     const confidence = safeText(input?.confidence, 20).toUpperCase();
-    const explanation = safeText(input?.explanation, VERDICT_EXPLANATION_MAX_CHARS);
+    const explanation = compactTextAtBoundary(
+      input?.explanation,
+      VERDICT_EXPLANATION_MAX_CHARS
+    );
     if (!VALID_VERDICTS.has(verdict) || !VALID_CONFIDENCE.has(confidence) || !explanation) {
       return { ok: false, reason: 'INVALID_SCHEMA' };
     }
@@ -371,6 +428,7 @@
     VERDICT_CITATION_QUOTE_MAX_CHARS,
     VERDICT_MAX_CITATIONS,
     safeText,
+    compactTextAtBoundary,
     tokenizeUnicode,
     normalizeClaimKey,
     normalizeComparableText,
