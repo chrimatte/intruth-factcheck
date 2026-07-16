@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Alice Morgan vs Bob Chen — policy debate</title>
+  <style>
+    body { margin: 0; min-height: 100vh; background: #20211f; color: #eee; font-family: system-ui, sans-serif; }
+    .stage { padding: 48px; max-width: 760px; }
+    .stage h1 { font-size: clamp(32px, 7vw, 72px); line-height: 1; max-width: 10ch; }
+    .stage p { color: #a8aaa5; max-width: 54ch; }
+
+    /* Deliberately hostile host-page rules: none may leak into the closed shadow tree. */
+    aside, button, input, h2, h3, h4, ol, ul, blockquote { all: unset !important; }
+    #rtfc-panel { display: none !important; color: hotpink !important; font: 72px serif !important; }
+    #intruth-extension-root {
+      all: unset !important;
+      display: none !important;
+      opacity: 0 !important;
+      pointer-events: auto !important;
+      transform: scale(.01) !important;
+    }
+  </style>
+</head>
+<body>
+  <main class="stage">
+    <p>Local visual regression fixture</p>
+    <h1>Debate video page</h1>
+    <p>This neutral page exercises InTruth's live, checking, grounded, unverifiable, error, source, and speaker states.</p>
+    <video aria-label="Preview video"></video>
+  </main>
+  <script>
+    window.__intruthListeners = [];
+    window.chrome = {
+      runtime: {
+        lastError: null,
+        getURL(path) { return `../../realtime-factcheck/${path}`; },
+        onMessage: { addListener(listener) { window.__intruthListeners.push(listener); } },
+        sendMessage(_message, callback) { if (callback) callback({ ok: true }); }
+      }
+    };
+  </script>
+  <script src="../../realtime-factcheck/src/content/session-export.js"></script>
+  <script src="../../realtime-factcheck/src/content/overlay.js"></script>
+  <script>
+    const emit = (message) => {
+      const responses = [];
+      window.__intruthListeners.forEach(listener => listener(message, {}, response => responses.push(response)));
+      return responses.at(-1);
+    };
+    const sessionId = 'preview-session';
+    emit({ type: 'START_FACTCHECK', sessionId });
+    emit({
+      type: 'TRANSCRIPT_RESULT', sessionId, isFinal: true,
+      text: 'The annual rate was 4.2 percent in December 2025.', speaker: 0
+    });
+    emit({
+      type: 'NEW_VERDICT', sessionId,
+      results: [{
+        sessionId, claimId: 'claim-checking', claim: 'The unemployment rate is currently below five percent.',
+        status: 'CHECKING', verdict: 'CHECKING', pending: true, dominantSpeakerId: 0,
+        explanation: 'Checking independent evidence…'
+      }]
+    });
+    emit({
+      type: 'NEW_VERDICT', sessionId,
+      results: [{
+        sessionId, claimId: 'claim-grounded', claim: 'The annual rate was 6.8 percent in December 2025.',
+        status: 'CHECKING', verdict: 'CHECKING', pending: true, dominantSpeakerId: 1
+      }]
+    });
+    emit({
+      type: 'UPDATE_VERDICTS', sessionId,
+      results: [{
+        sessionId, claimId: 'claim-grounded', claim: 'The annual rate was 6.8 percent in December 2025.',
+        status: 'COMPLETE', verdict: 'FALSE', pending: false, confidence: 'MEDIUM', dominantSpeakerId: 1,
+        explanation: 'Two independent releases report a 4.2 percent annual rate for that period.',
+        citations: [
+          { evidenceId: 'E1', sourceId: 'S1', quote: 'The annual rate was 4.2 percent in December 2025.' },
+          { evidenceId: 'E2', sourceId: 'S2', quote: 'The revised table confirms a rate of 4.2 percent.' }
+        ],
+        sources: [
+          { id: 'S1', evidenceId: 'E1', url: 'https://statistics.example/report', title: 'December statistical release', domain: 'statistics.example', date: '10 Jan 2026', snippet: 'The annual rate was 4.2 percent in December 2025.' },
+          { id: 'S2', evidenceId: 'E2', url: 'https://archive.example/table', title: 'Historical rate table', domain: 'archive.example', date: '11 Jan 2026', snippet: 'The revised table confirms a rate of 4.2 percent.' }
+        ],
+        lexical: { rates: { hedging: 2, certainty: 1 }, wordsPerSecond: 2.7 }
+      }]
+    });
+    emit({
+      type: 'NEW_VERDICT', sessionId,
+      results: [{ sessionId, claimId: 'claim-unknown', claim: 'This program created exactly one million jobs.', status: 'CHECKING', verdict: 'CHECKING', pending: true }]
+    });
+    emit({
+      type: 'UPDATE_VERDICTS', sessionId,
+      results: [{ sessionId, claimId: 'claim-unknown', claim: 'This program created exactly one million jobs.', status: 'UNVERIFIABLE', verdict: 'UNVERIFIABLE', pending: false, confidence: 'LOW', explanation: 'The available excerpts do not identify a compatible program and date.' }]
+    });
+    emit({
+      type: 'NEW_VERDICT', sessionId,
+      results: [{ sessionId, claimId: 'claim-error', claim: 'A provider-error example claim.', status: 'CHECKING', verdict: 'CHECKING', pending: true }]
+    });
+    emit({
+      type: 'UPDATE_VERDICTS', sessionId,
+      results: [{ sessionId, claimId: 'claim-error', claim: 'A provider-error example claim.', status: 'ERROR', verdict: 'ERROR', pending: false, explanation: 'The evidence service did not respond in time.' }]
+    });
+    emit({ type: 'NEW_SPEAKER', sessionId, speakerId: 0, sample: 'We should look at the published annual table.' });
+
+    window.__intruthPreview = {
+      emit,
+      sessionId,
+      ping() {
+        return emit({ type: 'PING', requestId: 'preview-ping', sessionId });
+      },
+      get hostUsesClosedShadowRoot() {
+        const host = document.getElementById('intruth-extension-root');
+        return Boolean(host && host.shadowRoot === null);
+      },
+      removeHost() {
+        document.getElementById('intruth-extension-root')?.remove();
+      },
+      tamperHost() {
+        document.getElementById('intruth-extension-root')?.style.setProperty('display', 'none', 'important');
+      }
+    };
+  </script>
+</body>
+</html>

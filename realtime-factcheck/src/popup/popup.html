@@ -1,52 +1,114 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>InTruth controls</title>
   <link rel="stylesheet" href="popup.css"/>
 </head>
 <body>
-  <div class="popup">
-    <div class="header">
-      <span class="logo">⬡</span>
-      <span class="title">InTruth</span>
-    </div>
-
-    <div class="status" id="status">Inactive</div>
-
-    <div class="keys-section" id="keysSection">
-      <div class="key-field">
-        <label class="key-label">Anthropic API Key</label>
-        <input class="key-input" id="anthropicKey" type="password" placeholder="sk-ant-..." autocomplete="off"/>
+  <main class="popup" aria-labelledby="popupTitle">
+    <header class="header">
+      <span class="logo-mark" aria-hidden="true"></span>
+      <div class="header-copy">
+        <h1 id="popupTitle">InTruth</h1>
+        <p class="status" id="status" role="status" aria-live="polite">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span id="statusText">Checking current tab</span>
+        </p>
       </div>
-      <div class="key-field">
-        <label class="key-label">Language</label>
-        <div class="lang-row">
-          <span id="langFlag" class="lang-flag">🇺🇸</span>
-          <select class="key-input key-select" id="languageSelect">
-            <option value="en">en</option>
-            <option value="es">es</option>
-            <option value="fr">fr</option>
-            <option value="de">de</option>
-            <option value="it">it</option>
-            <option value="pt">pt</option>
-            <option value="nl">nl</option>
-            <option value="hi">hi</option>
-            <option value="ja">ja</option>
-            <option value="zh">zh</option>
-            <option value="ar">ar</option>
-            <option value="ko">ko</option>
-            <option value="ru">ru</option>
-            <option value="pl">pl</option>
-            <option value="sv">sv</option>
-            <option value="tr">tr</option>
-          </select>
+    </header>
+
+    <div class="error-notice" id="errorNotice" role="alert" tabindex="-1" hidden></div>
+
+    <form id="configForm" novalidate>
+      <section class="config-section" id="keysSection" aria-labelledby="credentialsTitle">
+        <div class="section-heading">
+          <h2 id="credentialsTitle">Provider access</h2>
+          <span class="section-kicker">BYOK</span>
         </div>
-      </div>
-      <div class="key-hint" id="keyHint"></div>
-    </div>
 
-    <button class="toggle-btn" id="toggleBtn">Start Fact-Checking</button>
-  </div>
+        <div class="key-field">
+          <label class="key-label" for="anthropicKey">Anthropic API key</label>
+          <input class="key-input" id="anthropicKey" type="password" placeholder="Enter Anthropic key"
+                 autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="512"
+                 aria-describedby="anthropicHelp" required/>
+          <p class="field-help" id="anthropicHelp">Analyzes transcripts and claims.</p>
+        </div>
+
+        <div class="key-field">
+          <label class="key-label" for="deepgramKey">Deepgram API key</label>
+          <input class="key-input" id="deepgramKey" type="password" placeholder="Enter Deepgram key"
+                 autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="512"
+                 aria-describedby="deepgramHelp" required/>
+          <p class="field-help" id="deepgramHelp">Transcribes audio from the selected tab.</p>
+        </div>
+
+        <div class="key-field">
+          <label class="key-label" for="serperKey">Serper API key</label>
+          <input class="key-input" id="serperKey" type="password" placeholder="Enter Serper key"
+                 autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="512"
+                 aria-describedby="serperHelp" required/>
+          <p class="field-help" id="serperHelp">Searches the web for supporting evidence.</p>
+        </div>
+
+        <div class="key-field">
+          <label class="key-label" for="languageSelect">Transcript language</label>
+          <div class="language-row">
+            <span id="languageCode" class="language-code" aria-hidden="true">EN</span>
+            <select class="key-input key-select" id="languageSelect">
+              <option value="en">English</option>
+              <option value="es">Spanish</option>
+              <option value="fr">French</option>
+              <option value="de">German</option>
+              <option value="it">Italian</option>
+              <option value="pt">Portuguese</option>
+              <option value="nl">Dutch</option>
+              <option value="hi">Hindi</option>
+              <option value="ja">Japanese</option>
+              <option value="zh">Chinese</option>
+              <option value="ar">Arabic</option>
+              <option value="ko">Korean</option>
+              <option value="ru">Russian</option>
+              <option value="pl">Polish</option>
+              <option value="sv">Swedish</option>
+              <option value="tr">Turkish</option>
+            </select>
+          </div>
+        </div>
+      </section>
+
+      <section class="privacy-disclosure" aria-labelledby="privacyTitle">
+        <div class="section-heading">
+          <h2 id="privacyTitle">Before you start</h2>
+          <span class="privacy-badge">Data transfer</span>
+        </div>
+        <ul class="data-flow-list">
+          <li><strong>Tab audio</strong> is sent directly to Deepgram for live transcription.</li>
+          <li><strong>Transcripts and claims</strong> are sent to Anthropic for analysis.</li>
+          <li><strong>Claim search queries</strong> are sent to Serper to find evidence.</li>
+        </ul>
+        <p class="storage-note">Keys are stored locally in Chrome. Saving a key does not validate it; each provider accepts or rejects it when a request starts.</p>
+        <p class="cost-note">Using these APIs may incur charges on your provider accounts. InTruth does not control provider pricing or limits.</p>
+        <label class="consent-row" for="privacyConsent">
+          <input id="privacyConsent" type="checkbox" required/>
+          <span>I understand these transfers and agree to start the session.</span>
+        </label>
+        <div class="privacy-meta">
+          <a class="privacy-link" href="privacy.html" target="_blank" rel="noopener noreferrer">Read the privacy notice</a>
+          <span>Version 2026-07-16-v2</span>
+        </div>
+      </section>
+
+      <p class="config-hint" id="configHint" role="status" aria-live="polite"></p>
+    </form>
+
+    <button class="toggle-btn" id="toggleBtn" type="button" disabled
+            aria-describedby="configHint" aria-pressed="false" aria-busy="false">
+      <span id="buttonLabel">Start fact-checking</span>
+      <span class="button-progress" aria-hidden="true"></span>
+    </button>
+  </main>
   <script src="popup.js"></script>
 </body>
 </html>

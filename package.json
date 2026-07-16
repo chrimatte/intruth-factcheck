@@ -1,0 +1,17 @@
+{
+  "name": "intruth-factcheck",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Build, validation, and tests for the InTruth Chrome extension",
+  "type": "module",
+  "scripts": {
+    "lint": "node scripts/check-syntax.mjs",
+    "validate": "node scripts/validate-extension.mjs realtime-factcheck",
+    "test": "node --test",
+    "build": "node scripts/build.mjs",
+    "ci": "npm run lint && npm run validate && npm test && npm run build && node scripts/validate-extension.mjs dist/intruth"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

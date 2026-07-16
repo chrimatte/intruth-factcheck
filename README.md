@@ -1,113 +1,103 @@
-# intruth
+# InTruth
 
--- beta open! no API key needed, find it @ https://intruth-beta.vercel.app/ :-3
+InTruth is a Chrome extension that detects check-worthy claims in supported videos and verifies them against current web evidence while the video is playing.
 
-hi everyone!
+This fork is an evidence-first reliability release. A detected claim is shown as **checking**, never as a factual verdict. It becomes `TRUE`, `SUBSTANTIALLY TRUE`, `FALSE`, or `MISLEADING` only after the evidence pass completes. Missing, conflicting, or failed evidence produces an explicit `UNVERIFIABLE` or error state instead of silently preserving a model guess.
 
-https://chromewebstore.google.com/detail/InTruth/ikmpglbpcdoapfelcbfpoaddmhmaaocg?hl=en&authuser=0
+> InTruth is an assistive research tool, not an authority. Transcription, retrieval, and language models can all be wrong. Read the cited sources before relying on a result, especially for medical, legal, financial, electoral, or safety-sensitive decisions.
 
-built a real-time factchecker called intruth for live debates, speeches, interviews, press conferences, and political events!
-multilang support was just added, it now works on debates in any of the selectable languages!!
+## How it works
 
-<img width="400" height="225" alt="image" src="https://github.com/user-attachments/assets/a0a8fba9-c28f-473c-866d-84951a9b548e" />
+```mermaid
+flowchart LR
+  A["Active-tab audio"] -->|"user starts capture"| B["Deepgram transcription"]
+  B --> C["Anthropic claim extraction"]
+  C --> D["Serper evidence search"]
+  D --> E["Anthropic evidence-grounded evaluation"]
+  E --> F["Accessible overlay with cited sources"]
+```
 
-it listens to audio from the active browser tab, identifies factual claims as they are made, and provides instant evidence-based verdicts using AI analysis and web research; most fact-checking docs come out days after debates, but now users can evaluate claims as they're made.
+The extension uses immutable session and claim IDs so late network responses cannot update another session. Web snippets and transcripts are treated as untrusted data, model output is schema-validated, and every claim receives a terminal state.
 
-this is part of a bigger research project assessing how deception in political speech is prosodically / linguistically different than deception in other contexts (rehearsed / read speech), so more to come!
+## Current scope
 
-## features
+- Chrome 116 or later using Manifest V3
+- YouTube and Jubilee pages listed in [`manifest.json`](realtime-factcheck/manifest.json)
+- Bring your own Anthropic, Deepgram, and Serper API keys
+- Live transcript, speaker labels, check-worthy claim detection, evidence-linked verdicts, and local HTML report export
+- No developer-operated relay server and no analytics or telemetry
 
-- live claim detection: continuously monitors speech from the active tab and identifies check-worthy factual claims in real time
+The language selector controls transcription. Retrieval quality, speaker diarization, and model accuracy vary by language, audio quality, topic, and provider support.
 
-- live claim evaluation: analyzes claim veracity using large language models and external sources to determine whether a statement is:
+## Install the unpacked extension
 
-* TRUE
-* SUBSTANTIALLY TRUE
-* FALSE
-* MISLEADING
-* UNVERIFIABLE
+Requirements: Node.js 20+ for the build checks and valid API credentials for [Anthropic](https://www.anthropic.com/), [Deepgram](https://deepgram.com/), and [Serper](https://serper.dev/).
 
-- speaker attribution: tracks speakers throughout a discussion and attributes claims to the correct participant whenever possible
+```bash
+npm run ci
+```
 
-- context analysis: uses surrounding conversation and event context to improve claim identification and reduce false positives
+Then:
 
-- real-time verdicts: veracity checks and sources appear while the debate or interview is still in progress
+1. Open `chrome://extensions`.
+2. Enable **Developer mode**.
+3. Select **Load unpacked**.
+4. Choose the generated `dist/intruth` directory.
+5. Open a supported video page, open InTruth, enter the three provider keys, review the data disclosure, and grant consent.
+6. Select the transcript language and start the session.
 
-- bring-your-own-key: users provide their own anthropic API key
+The checked-in extension is also directly loadable from `realtime-factcheck`, but `dist/intruth` is the validated release artifact.
 
-## how to use intruth:
+## Data and credentials
 
-1. open a video, livestream, debate, interview, or speech.
-2. start the extension, and assign speakers w/ the press of a button
-3. audio from the active tab is captured
-4. speech transcribed 
-5. check-worthy, factual claims are extracted
-6. claims evaluated against authoritative sources
-7. verdicts, explanations are displayed to the user!!!
+InTruth stores provider keys, the language preference, and consent locally in Chrome extension storage. Access is restricted to trusted extension contexts, so supported webpages cannot read those values through the content script. Chrome storage is not a hardware-backed secret vault; anyone with sufficient access to the browser profile or device may still recover it.
 
-## what's check-worthy?? 
+During an active session:
 
-check-worthy claims in this context are:
+- tab audio is sent to Deepgram for transcription;
+- transcript context and extracted evidence are sent to Anthropic for claim extraction and evaluation;
+- claim-derived search queries are sent to Serper;
+- cited results remain in the page overlay until it is removed, and a report is downloaded only on user request.
 
-* specific factual statements
-* statistics and numerical claims
-* historical events
-* government actions and policies
-* scientific and medical claims
-* public records and documented events
+Chrome's memory-backed session storage temporarily keeps a bounded recovery/outbox record for the active session. It may contain pending claims, short transcript source quotes, experimental lexical markers, and undelivered cited results; it is restricted to trusted extension contexts and cleared during normal stop or failed-start cleanup. See [`PRIVACY.md`](PRIVACY.md) for exact retention and failure-case details.
 
-i.e. 
-* "inflation peaked at 9.1% in 2022."
-* "the bill passed the Senate in 2021."
-* "the unemployment rate is currently below 5%."
+The project developer does not receive these requests. Provider retention and training rules depend on the user's own provider accounts and agreements. See [`PRIVACY.md`](PRIVACY.md) for the full disclosure and deletion controls.
 
-NOT:
-* opinions
-* predictions / future promises
-* rhetorical questions
-* value judgments
-* subjective descriptions
+## Reliability boundaries
 
-i.e.
-* "This policy will destroy the economy."
-* "I have the best plan."
-* "If my opponent wins, disaster will follow."
+InTruth deliberately abstains when it cannot support a categorical result. Even a cited verdict can be wrong because a transcript may contain an incorrect name, number, or negation; a search snippet may omit crucial context; a source may be stale or unreliable; or a model may misunderstand the evidence.
 
-## privacy details
+Speaker delivery markers are experimental descriptive signals only. They do **not** measure truthfulness, deception, intent, or character and are kept separate from the factual verdict.
 
-users provide their own API credentials, i have no access to that
+## Development
 
-transcript data may be sent directly to the AI service configured by the user in order to generate fact-check results
+The repository has no runtime package dependencies. The tooling validates manifest and HTML references, rejects embedded provider credentials, checks JavaScript syntax, runs unit tests, and builds the unpacked artifact.
 
-see privacy policy on web store for complete details!
+```bash
+npm run lint       # parse every JavaScript file
+npm run validate   # verify extension references and secret hygiene
+npm test           # unit and repository smoke tests
+npm run build      # create dist/intruth
+npm run ci         # run the complete local CI sequence
+```
 
-## permissions
+Project layout:
 
-tabcapture: extracts audio from the active browser tab after the user explicitly starts a fact-checking session.
+```text
+realtime-factcheck/
+├── manifest.json
+├── assets/
+└── src/
+    ├── background/   # session orchestration, claim extraction, evidence grounding
+    ├── content/      # overlay, report export, optional delivery markers
+    ├── offscreen/    # tab audio and Deepgram WebSocket lifecycle
+    └── popup/        # configuration, consent, and capture controls
+scripts/              # dependency-free validation and build tooling
+tests/                # Node test suite
+```
 
-activetab: allows the extension to interact with the currently selected tab
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md), [`SECURITY.md`](SECURITY.md), and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) before changing data flow or verdict semantics.
 
-scripting: injects the fact-checking interface into supported pages.
+## License and attribution
 
-storage: stores user preferences and API configuration LOCALLY
-
-offscreen: supports background audio processing and transcription workflows.
-
-## limitations and warnings
-
-fact-checking is inherently imperfect! generated verdicts may occasionally be incorrect, incomplete, or based on outdated information. if you're unsure about something, independently evaluate it and consult original sources when making decisions!
-
-this extension is as an informational tool and NOT a definitive authority !
-
-### requirements
-
-* Chrome Manifest V3
-* User-provided AI API key
-* Modern Chromium-based browser
-
-## contributing
-
-would love advice, any features you'd like, and any edge cases you've found! 
-## license
-
-view license tab
+Copyright © 2024 Risha Panigrahi. Use is governed by the repository's [non-commercial license](LICENSE). This fork credits and links to the [original InTruth repository](https://github.com/rpanigrahi222/intruth-factcheck); commercial use requires the original author's explicit written permission.
