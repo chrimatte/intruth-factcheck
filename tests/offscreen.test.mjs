@@ -11,6 +11,11 @@ const offscreenSource = await readFile(
 function loadOffscreen({
   runtimeSend,
   getUserMedia,
+  setIntervalFn = setInterval,
+  clearIntervalFn = clearInterval,
+  setTimeoutFn = setTimeout,
+  clearTimeoutFn = clearTimeout,
+  WebSocketImpl = { OPEN: 1, CLOSED: 3 },
 } = {}) {
   const messages = [];
   const chrome = {
@@ -36,9 +41,11 @@ function loadOffscreen({
     console: { error() {}, warn() {}, log() {} },
     crypto: globalThis.crypto,
     URLSearchParams,
-    WebSocket: { OPEN: 1, CLOSED: 3 },
-    setTimeout,
-    clearTimeout,
+    WebSocket: WebSocketImpl,
+    setTimeout: setTimeoutFn,
+    clearTimeout: clearTimeoutFn,
+    setInterval: setIntervalFn,
+    clearInterval: clearIntervalFn,
   };
   if (getUserMedia) sandbox.navigator = { mediaDevices: { getUserMedia } };
   vm.createContext(sandbox);
@@ -259,4 +266,437 @@ test('Deepgram streaming URL uses the current low-latency transcription contract
   assert.equal(url.searchParams.get('endpointing'), '300');
   assert.equal(url.searchParams.get('utterance_end_ms'), '2500');
   assert.equal(url.searchParams.get('diarize'), 'true');
+});
+
+test('Deepgram receives a text KeepAlive while tab audio is interrupted', () => {
+  let keepAliveTick = null;
+  const harness = loadOffscreen({
+    setIntervalFn(callback) {
+      keepAliveTick = callback;
+      return 41;
+    },
+    clearIntervalFn() {},
+  });
+  harness.sandbox.controlFrames = [];
+  evaluate(harness, `
+    currentCapture = {
+      sessionId: 'session_keepalive',
+      state: 'listening',
+      keepAliveTimer: null,
+      lastAudioFrameAt: null,
+      lastKeepAliveAt: null,
+      socket: {
+        readyState: WebSocket.OPEN,
+        send(payload) { controlFrames.push(payload); },
+      },
+    };
+    startDeepgramKeepAlive(currentCapture);
+  `);
+
+  assert.equal(typeof keepAliveTick, 'function');
+  keepAliveTick();
+  assert.deepEqual([...harness.sandbox.controlFrames], [JSON.stringify({ type: 'KeepAlive' })]);
+  assert.equal(evaluate(harness, 'Number.isFinite(currentCapture.lastKeepAliveAt)'), true);
+});
+
+test('each Deepgram connection starts with a non-empty binary silence frame', async () => {
+  const sockets = [];
+  class FakeWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 3;
+
+    constructor() {
+      this.readyState = FakeWebSocket.CONNECTING;
+      this.listeners = new Map();
+      this.sent = [];
+      sockets.push(this);
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) || [];
+      listeners.push(listener);
+      this.listeners.set(type, listeners);
+    }
+
+    emit(type, value = {}) {
+      for (const listener of this.listeners.get(type) || []) listener(value);
+    }
+
+    send(payload) {
+      this.sent.push(payload);
+    }
+
+    close() {
+      this.readyState = FakeWebSocket.CLOSED;
+    }
+  }
+
+  const harness = loadOffscreen({ WebSocketImpl: FakeWebSocket });
+  const opening = evaluate(harness, `
+    currentCapture = {
+      sessionId: 'session_seed_audio',
+      language: 'en',
+      deepgramKey: 'test-key',
+      state: 'starting',
+      socket: null,
+      handshakeTimer: null,
+      handshakeReject: null,
+      expectedSocketClose: false,
+      lastAudioFrameAt: null,
+      audioContext: { sampleRate: 48000 },
+    };
+    openDeepgramSocket(currentCapture)
+  `);
+  assert.equal(sockets.length, 1);
+  sockets[0].readyState = FakeWebSocket.OPEN;
+  sockets[0].emit('open');
+  await opening;
+
+  assert.equal(sockets[0].sent.length, 1);
+  assert.equal(Object.prototype.toString.call(sockets[0].sent[0]), '[object ArrayBuffer]');
+  assert.equal(sockets[0].sent[0].byteLength, 1920);
+  assert.equal(evaluate(harness, 'Number.isFinite(currentCapture.lastAudioFrameAt)'), true);
+});
+
+test('recent audio suppresses redundant Deepgram KeepAlive frames', () => {
+  let keepAliveTick = null;
+  const harness = loadOffscreen({
+    setIntervalFn(callback) {
+      keepAliveTick = callback;
+      return 42;
+    },
+    clearIntervalFn() {},
+  });
+  harness.sandbox.controlFrames = [];
+  evaluate(harness, `
+    currentCapture = {
+      sessionId: 'session_audio_active',
+      state: 'listening',
+      keepAliveTimer: null,
+      lastAudioFrameAt: Date.now(),
+      socket: {
+        readyState: WebSocket.OPEN,
+        send(payload) { controlFrames.push(payload); },
+      },
+    };
+    startDeepgramKeepAlive(currentCapture);
+  `);
+
+  keepAliveTick();
+  assert.deepEqual([...harness.sandbox.controlFrames], []);
+});
+
+test('Deepgram NET errors trigger socket recovery without ending the session', async () => {
+  const harness = loadOffscreen();
+  harness.sandbox.recoveryReasons = [];
+  evaluate(harness, `
+    currentCapture = {
+      sessionId: 'session_transient',
+      state: 'listening',
+      ignoreProviderResults: false,
+      utterance: createEmptyUtterance(),
+    };
+    recoverDeepgramSocket = (_context, reason) => {
+      recoveryReasons.push(reason);
+      return Promise.resolve(true);
+    };
+    handleDeepgramMessage(currentCapture, { data: JSON.stringify({
+      type: 'Error',
+      code: 'NET-0001',
+      description: 'audio timeout',
+    }) });
+  `);
+  await Promise.resolve();
+
+  assert.deepEqual([...harness.sandbox.recoveryReasons], ['net-0001']);
+  const error = harness.messages.find(message => message.type === 'PIPELINE_ERROR');
+  assert.equal(error?.code, 'DEEPGRAM_TRANSIENT_ERROR');
+  assert.equal(error?.retryable, true);
+  assert.equal(error?.fatal, false);
+  assert.equal(evaluate(harness, 'currentCapture.state'), 'listening');
+});
+
+test('seeking discards the old utterance and reconnects once after rapid seeked events', async () => {
+  let timerCallback = null;
+  let timerId = 0;
+  const harness = loadOffscreen({
+    setTimeoutFn(callback) {
+      timerCallback = callback;
+      return ++timerId;
+    },
+    clearTimeoutFn() {
+      timerCallback = null;
+    },
+  });
+  harness.sandbox.recoveryReasons = [];
+  evaluate(harness, `
+    currentCapture = {
+      sessionId: 'session_seek',
+      revision: 1,
+      state: 'listening',
+      mediaSeeking: false,
+      timelineEpoch: 0,
+      seekRecoveryTimer: null,
+      ignoreProviderResults: false,
+      utterance: createEmptyUtterance(),
+      audioContext: { state: 'running' },
+    };
+    currentCapture.utterance.parts.push('stale text');
+    recoverDeepgramSocket = (_context, reason) => {
+      recoveryReasons.push(reason);
+      return Promise.resolve(true);
+    };
+  `);
+
+  await evaluate(harness, `handleMediaTimelineEvent({
+    sessionId: 'session_seek', phase: 'seeking', epoch: 1, currentTime: 600,
+  })`);
+  assert.equal(evaluate(harness, 'currentCapture.mediaSeeking'), true);
+  assert.equal(evaluate(harness, 'currentCapture.ignoreProviderResults'), true);
+  assert.equal(evaluate(harness, 'currentCapture.utterance.parts.length'), 0);
+
+  await evaluate(harness, `handleMediaTimelineEvent({
+    sessionId: 'session_seek', phase: 'seeked', epoch: 1, currentTime: 600,
+  })`);
+  const firstTimer = timerCallback;
+  await evaluate(harness, `handleMediaTimelineEvent({
+    sessionId: 'session_seek', phase: 'seeked', epoch: 1, currentTime: 601,
+  })`);
+  assert.notEqual(timerCallback, firstTimer, 'the latest seeked event replaces the older debounce');
+  timerCallback();
+  await Promise.resolve();
+
+  assert.deepEqual([...harness.sandbox.recoveryReasons], ['media_seek']);
+  await evaluate(harness, `handleMediaTimelineEvent({
+    sessionId: 'session_seek', phase: 'paused', epoch: 1, currentTime: 601,
+  })`);
+  assert.equal(evaluate(harness, 'currentCapture.mediaPaused'), true);
+  await evaluate(harness, `handleMediaTimelineEvent({
+    sessionId: 'session_seek', phase: 'playing', epoch: 1, currentTime: 601,
+  })`);
+  assert.equal(evaluate(harness, 'currentCapture.mediaPaused'), false);
+});
+
+test('a seek queues a clean socket boundary behind an in-flight reconnect', async () => {
+  const harness = loadOffscreen();
+  evaluate(harness, `
+    currentCapture = {
+      sessionId: 'session_recovery_seek',
+      revision: 0,
+      state: 'listening',
+      socket: null,
+      socketRecoveryPromise: null,
+      activeRecoveryEpoch: null,
+      pendingSocketRecovery: null,
+      expectedSocketClose: false,
+      handshakeTimer: null,
+      handshakeReject: null,
+      mediaSeeking: false,
+      timelineEpoch: 0,
+      ignoreProviderResults: false,
+      fullRefreshRequested: false,
+      utterance: createEmptyUtterance(),
+    };
+    globalThis.openCalls = 0;
+    globalThis.resolveFirstOpen = null;
+    openDeepgramSocket = () => {
+      openCalls += 1;
+      if (openCalls === 1) {
+        return new Promise(resolve => { resolveFirstOpen = resolve; });
+      }
+      return Promise.resolve();
+    };
+    globalThis.firstRecovery = recoverDeepgramSocket(currentCapture, 'network');
+  `);
+  await Promise.resolve();
+  evaluate(harness, `
+    currentCapture.timelineEpoch = 1;
+    globalThis.seekRecovery = recoverDeepgramSocket(currentCapture, 'media_seek');
+    resolveFirstOpen();
+  `);
+  await evaluate(harness, 'seekRecovery');
+
+  assert.equal(evaluate(harness, 'openCalls'), 2);
+  assert.equal(evaluate(harness, 'currentCapture.ignoreProviderResults'), false);
+  assert.equal(evaluate(harness, 'currentCapture.activeRecoveryEpoch'), null);
+  assert.equal(evaluate(harness, 'currentCapture.pendingSocketRecovery'), null);
+});
+
+test('audio health watchdog rebuilds a live-but-silent capture and respects pause', () => {
+  const watchdogTicks = [];
+  const harness = loadOffscreen({
+    setIntervalFn(callback) {
+      watchdogTicks.push(callback);
+      return watchdogTicks.length;
+    },
+    clearIntervalFn() {},
+  });
+  harness.sandbox.refreshReasons = [];
+  evaluate(harness, `
+    currentCapture = {
+      sessionId: 'session_audio_watchdog',
+      state: 'listening',
+      audioHealthTimer: null,
+      mediaSeeking: false,
+      mediaPaused: true,
+      socketRecoveryPromise: null,
+      fullRefreshRequested: false,
+      audioContext: { state: 'running' },
+      lastAudioFrameAt: Date.now() - AUDIO_STALL_TIMEOUT_MS - 1,
+      trackMutedAt: null,
+    };
+    requestNewTabStream = (_context, reason) => refreshReasons.push(reason);
+    startAudioHealthWatchdog(currentCapture);
+  `);
+
+  assert.equal(watchdogTicks.length, 1);
+  watchdogTicks[0]();
+  assert.deepEqual([...harness.sandbox.refreshReasons], []);
+  evaluate(harness, 'currentCapture.mediaPaused = false');
+  watchdogTicks[0]();
+  assert.deepEqual([...harness.sandbox.refreshReasons], ['audio_capture_stalled']);
+});
+
+test('post-seek PCM is buffered until the replacement socket is ready', () => {
+  const harness = loadOffscreen();
+  harness.sandbox.sentFrames = [];
+  evaluate(harness, `
+    const processor = {
+      onaudioprocess: null,
+      connect() {},
+      disconnect() {},
+    };
+    currentCapture = {
+      sessionId: 'session_buffered_seek',
+      state: 'listening',
+      mediaSeeking: false,
+      ignoreProviderResults: true,
+      socket: null,
+      pendingAudioFrames: [],
+      pendingAudioBytes: 0,
+      sentFrames: 0,
+      droppedFrames: 0,
+      lastAudioFrameAt: null,
+      backpressured: false,
+      source: { connect() {}, disconnect() {} },
+      processor: null,
+      audioContext: {
+        destination: {},
+        createScriptProcessor() { return processor; },
+      },
+    };
+    startAudioProcessor(currentCapture);
+    processor.onaudioprocess({
+      inputBuffer: { getChannelData() { return new Float32Array([0.25, -0.25, 0]); } },
+    });
+    globalThis.bufferedBytes = currentCapture.pendingAudioBytes;
+    currentCapture.socket = {
+      readyState: WebSocket.OPEN,
+      send(frame) { sentFrames.push(frame.byteLength); },
+    };
+    currentCapture.ignoreProviderResults = false;
+    globalThis.flushedFrames = flushBufferedAudio(currentCapture, currentCapture.socket);
+  `);
+
+  assert.equal(harness.sandbox.bufferedBytes, 6);
+  assert.equal(harness.sandbox.flushedFrames, 1);
+  assert.deepEqual([...harness.sandbox.sentFrames], [6]);
+  assert.equal(evaluate(harness, 'currentCapture.pendingAudioBytes'), 0);
+});
+
+test('STOP during a reconnect handshake prevents any later socket or stream revival', async () => {
+  const sockets = [];
+  class FakeWebSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSED = 3;
+
+    constructor() {
+      this.readyState = FakeWebSocket.CONNECTING;
+      this.listeners = new Map();
+      sockets.push(this);
+    }
+
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) || [];
+      listeners.push(listener);
+      this.listeners.set(type, listeners);
+    }
+
+    removeEventListener(type, listener) {
+      const listeners = this.listeners.get(type) || [];
+      this.listeners.set(type, listeners.filter(candidate => candidate !== listener));
+    }
+
+    emit(type, value = {}) {
+      for (const listener of this.listeners.get(type) || []) listener(value);
+    }
+
+    send() {}
+
+    close(code = 1000, reason = '') {
+      this.readyState = FakeWebSocket.CLOSED;
+      this.emit('close', { code, reason });
+    }
+  }
+
+  const harness = loadOffscreen({ WebSocketImpl: FakeWebSocket });
+  evaluate(harness, `
+    currentCapture = createCaptureContext('session_stop_reconnect', 'en', 'test-key', 0);
+    currentCapture.state = 'listening';
+    currentCapture.audioContext = {
+      sampleRate: 48000,
+      state: 'running',
+      close() { return Promise.resolve(); },
+      removeEventListener() {},
+    };
+    globalThis.reconnecting = recoverDeepgramSocket(currentCapture, 'network');
+  `);
+  await Promise.resolve();
+  assert.equal(sockets.length, 1);
+
+  const stopped = await evaluate(harness, "stopCapture('session_stop_reconnect')");
+  assert.equal(stopped.state, 'idle');
+  await evaluate(harness, 'reconnecting');
+  sockets[0].emit('open');
+  await new Promise(resolve => setTimeout(resolve, 0));
+
+  assert.equal(sockets.length, 1, 'a stopped reconnect created another socket');
+  assert.equal(evaluate(harness, 'getCaptureStatus().active'), false);
+  assert.equal(
+    harness.messages.some(message => message.type === 'REQUEST_NEW_STREAM'),
+    false
+  );
+});
+
+test('transcript payloads carry the media timeline epoch', () => {
+  const harness = loadOffscreen();
+  const epoch = evaluate(harness, `
+    buildTranscriptPayload({
+      sessionId: 'session_epoch',
+      timelineEpoch: 7,
+      utterance: createEmptyUtterance(),
+    }, 'After the seek', {
+      isFinal: true,
+      interim: false,
+      words: [],
+    }).timelineEpoch
+  `);
+  assert.equal(epoch, 7);
+});
+
+test('a replacement capture context inherits the active media timeline epoch', () => {
+  const harness = loadOffscreen();
+  const epoch = evaluate(
+    harness,
+    "createCaptureContext('session_epoch_refresh', 'en', 'test-key', 1, 9).timelineEpoch"
+  );
+  const invalidEpoch = evaluate(
+    harness,
+    "createCaptureContext('session_epoch_invalid', 'en', 'test-key', 2, -4).timelineEpoch"
+  );
+
+  assert.equal(epoch, 9);
+  assert.equal(invalidEpoch, 0);
 });

@@ -9,7 +9,7 @@
     'UNVERIFIABLE',
   ]);
   const VALID_CONFIDENCE = new Set(['HIGH', 'MEDIUM', 'LOW']);
-  const VERDICT_EXPLANATION_MAX_CHARS = 360;
+  const VERDICT_EXPLANATION_MAX_CHARS = 240;
   const VERDICT_CITATION_QUOTE_MAX_CHARS = 240;
   const VERDICT_MAX_CITATIONS = 3;
   const NEGATION_TOKENS = new Set([
@@ -110,6 +110,34 @@
       .replace(/[,:;\-–—]+$/u, '')
       .trimEnd();
     return compact ? `${compact}…` : '';
+  }
+
+  function sanitizeVerdictExplanation(value) {
+    return String(value || '')
+      // Evidence/source IDs are an internal prompt contract. Match them only in
+      // evidence-label contexts so legitimate entities such as European route
+      // E1 or additive E100 remain untouched.
+      .replace(
+        /\b(?:evidence|source)\s+[ES]\d+\s*['’]s\b/giu,
+        'the cited source’s'
+      )
+      .replace(
+        /\b[ES]\d+\s*['’]s\s+(snippet|excerpt|quote|title|source|result)\b/giu,
+        'the cited source’s $1'
+      )
+      .replace(/[[(]\s*[ES]\d+\s*[\])]/giu, 'the cited evidence')
+      .replace(
+        /\b(?:evidence|evidenza|prova|evidencia|preuve|beleg|evidência|bewijs)\s+[ES]\d+\b/giu,
+        'the cited evidence'
+      )
+      .replace(
+        /\b(?:source|fonte|fuente|quelle|bron)\s+[ES]\d+\b/giu,
+        'the cited source'
+      )
+      .replace(
+        /\b[ES]\d+\s+(supports?|confirms?|shows?|states?|reports?|indicates?|documents?|establishes?|contradicts?|refutes?|supplies?|provides?|conferma|supporta|mostra|afferma|indica|documenta|stabilisce|contraddice|smentisce|fornisce|confirma|respalda|muestra|establece|contradice|refuta|proporciona|confirme|soutient|montre|indique|documente|établit|contredit|réfute|fournit|bestätigt|belegt|zeigt|berichtet|widerlegt|liefert)\b/giu,
+        'the cited source $1'
+      );
   }
 
   function tokenizeUnicode(text) {
@@ -361,7 +389,7 @@
     const verdict = safeText(input?.verdict, 40).toUpperCase();
     const confidence = safeText(input?.confidence, 20).toUpperCase();
     const explanation = compactTextAtBoundary(
-      input?.explanation,
+      sanitizeVerdictExplanation(input?.explanation),
       VERDICT_EXPLANATION_MAX_CHARS
     );
     if (!VALID_VERDICTS.has(verdict) || !VALID_CONFIDENCE.has(confidence) || !explanation) {

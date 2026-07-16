@@ -291,7 +291,7 @@ test("validated citations retain only cited sources and cap snippet-only confide
 });
 
 test("verdict copy and citation output remain compact", () => {
-  assert.equal(VERDICT_EXPLANATION_MAX_CHARS, 360);
+  assert.equal(VERDICT_EXPLANATION_MAX_CHARS, 240);
   assert.equal(VERDICT_CITATION_QUOTE_MAX_CHARS, 240);
   assert.equal(VERDICT_MAX_CITATIONS, 3);
 
@@ -314,6 +314,51 @@ test("verdict copy and citation output remain compact", () => {
   assert.equal(compactResult.ok, true);
   assert.equal(compactResult.explanation.length, VERDICT_EXPLANATION_MAX_CHARS);
   assert.equal(compactResult.citations[0].quote.length, VERDICT_CITATION_QUOTE_MAX_CHARS);
+});
+
+test("verdict copy never exposes internal evidence IDs", () => {
+  const result = validateGroundedResult({
+    verdict: "TRUE",
+    confidence: "MEDIUM",
+    explanation: "E1's snippet and evidence E2 support the central assertion; source E1 supplies the date.",
+    citations: [{ evidenceId: "E1", quote: "annual rate was 4.2 percent" }]
+  }, sources);
+
+  assert.equal(result.ok, true);
+  assert.doesNotMatch(result.explanation, /\bE\d+\b/u);
+  assert.match(result.explanation, /cited evidence/u);
+});
+
+test("verdict copy preserves natural E-identifiers and removes internal source IDs", () => {
+  const natural = validateGroundedResult({
+    verdict: "TRUE",
+    confidence: "MEDIUM",
+    explanation: "European route E1 and additive E100 remain regulated.",
+    citations: [{ evidenceId: "E1", quote: "annual rate was 4.2 percent" }]
+  }, sources);
+  assert.equal(natural.ok, true);
+  assert.match(natural.explanation, /route E1/u);
+  assert.match(natural.explanation, /additive E100/u);
+
+  const internal = validateGroundedResult({
+    verdict: "TRUE",
+    confidence: "MEDIUM",
+    explanation: "Source S1 confirms the figure; S2's snippet supplies the date.",
+    citations: [{ evidenceId: "E1", quote: "annual rate was 4.2 percent" }]
+  }, sources);
+  assert.equal(internal.ok, true);
+  assert.doesNotMatch(internal.explanation, /\bS\d+\b/u);
+  assert.match(internal.explanation, /cited source/u);
+
+  const localized = validateGroundedResult({
+    verdict: "TRUE",
+    confidence: "MEDIUM",
+    explanation: "La fonte E1 conferma il dato; E2 contraddice il dettaglio e [S1] aggiunge contesto.",
+    citations: [{ evidenceId: "E1", quote: "annual rate was 4.2 percent" }]
+  }, sources);
+  assert.equal(localized.ok, true);
+  assert.doesNotMatch(localized.explanation, /(?:\b[ES]\d+\b|\[[ES]\d+\])/u);
+  assert.match(localized.explanation, /cited source/u);
 });
 
 test("citation cap counts validated citations instead of raw candidates", () => {

@@ -13,7 +13,7 @@ const VIEW_STATES = Object.freeze({
   SETTINGS: 'settings',
 });
 
-const PRIVACY_NOTICE_VERSION = '2026-07-16-v2';
+const PRIVACY_NOTICE_VERSION = '2026-07-16-v3';
 
 const STORAGE_KEYS = [
   'anthropicKey',

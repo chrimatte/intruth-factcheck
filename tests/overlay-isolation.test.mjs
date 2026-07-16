@@ -111,6 +111,87 @@ test("utterance timestamps estimate media start time and clamp safely", async ()
   assert.match(source, /const timestamp = getVideoTimestamp\(message\)/);
 });
 
+test("media timeline seeks create a new transcript boundary and survive video replacement", async () => {
+  const source = await readFile(overlayPath, "utf8");
+  const resetHelper = source.match(/function resetMediaTimelineBoundary\(\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(resetHelper, "timeline reset helper must remain testable");
+
+  const context = {
+    sentenceTimestamps: [{ text: "before", timestamp: "01:00" }],
+    lastTranscriptTimestamp: "01:00",
+    lastActiveSpeaker: "Speaker 1",
+    clearInterim() {
+      context.interimCleared = true;
+    },
+  };
+  vm.runInNewContext(`${resetHelper}; resetMediaTimelineBoundary(); result = {
+    timestamps: sentenceTimestamps.length,
+    lastTimestamp: lastTranscriptTimestamp,
+    lastSpeaker: lastActiveSpeaker,
+    interimCleared
+  };`, context);
+  assert.deepEqual({ ...context.result }, {
+    timestamps: 0,
+    lastTimestamp: "",
+    lastSpeaker: null,
+    interimCleared: true,
+  });
+
+  assert.match(source, /addEventListener\('seeking',[\s\S]*?beginMediaTimelineBoundary/);
+  assert.match(source, /addEventListener\('seeked',[\s\S]*?completeMediaTimelineBoundary/);
+  assert.match(source, /type: 'MEDIA_TIMELINE_EVENT'/);
+  assert.match(source, /epoch: mediaTimelineEpoch/);
+  assert.match(source, /currentTime: Number\.isFinite/);
+  assert.match(source, /media_replaced/);
+  assert.match(source, /#movie_player video\.html5-main-video/);
+  assert.match(source, /mediaTimelineObserver\.observe\(document\.documentElement, \{ childList: true, subtree: true \}\)/);
+  assert.match(source, /case 'TRANSCRIPT_RESULT':\s+if \(mediaTimelineSeeking \|\| !resultMatchesMediaTimeline/);
+  assert.match(source, /addEventListener\('pause'/);
+  assert.match(source, /addEventListener\('play'/);
+  assert.match(source, /nextVideo\.paused \? 'paused' : 'playing'/);
+  assert.match(source, /date\.toISOString\(\)\.slice\(0, 10\)/);
+  assert.doesNotMatch(source, /date\.toLocaleDateString/);
+
+  const finishBlock = source.slice(source.indexOf("function finishSession()"), source.indexOf("function beginSession("));
+  const removeBlock = source.slice(source.indexOf("function removePanel()"), source.indexOf("function finishSession()"));
+  assert.match(finishBlock, /teardownMediaTimelineEvents\(\)/);
+  assert.match(removeBlock, /teardownMediaTimelineEvents\(\)/);
+  assert.match(source, /mediaTimelineObserver\?\.disconnect\(\)/);
+  assert.match(source, /mediaElementAbortController\?\.abort\(\)/);
+});
+
+test("panel close reconciles a lost stop response before deciding whether to block", async () => {
+  const source = await readFile(overlayPath, "utf8");
+  const getSessionIdHelper = source.match(/function getSessionId\([^)]*\) \{[\s\S]*?\n\}/)?.[0];
+  const statusHelper = source.match(/function captureStatusShowsActive\([^)]*\) \{[\s\S]*?\n\}/)?.[0];
+  assert.ok(getSessionIdHelper && statusHelper, "capture status reconciliation helpers must remain testable");
+
+  const context = {};
+  vm.runInNewContext(`${getSessionIdHelper}; ${statusHelper}; results = [
+    captureStatusShowsActive({ isCapturing: true, phase: 'ACTIVE', sessionId: 'session-1' }, 'session-1'),
+    captureStatusShowsActive({ isCapturing: false, phase: 'STOPPING', sessionId: 'session-1' }, 'session-1'),
+    captureStatusShowsActive({ isCapturing: false, phase: 'INACTIVE', sessionId: null }, 'session-1'),
+    captureStatusShowsActive({ isCapturing: true, phase: 'ACTIVE', sessionId: 'new-session' }, 'session-1'),
+    captureStatusShowsActive(null, 'session-1')
+  ];`, context);
+  assert.deepEqual([...context.results], [true, false, false, false, false]);
+
+  const stopHelper = source.slice(
+    source.indexOf("async function stopCaptureForPanelClose("),
+    source.indexOf("function setManagedTimeout(")
+  );
+  const closeBlock = source.slice(
+    source.indexOf("if (target.id === 'rtfc-close')"),
+    source.indexOf("if (target.id === 'rtfc-transcript-toggle')")
+  );
+  assert.match(stopHelper, /STOP_FACTCHECK/);
+  assert.match(stopHelper, /catch \(stopError\)[\s\S]*?GET_STATUS/);
+  assert.match(stopHelper, /captureStatusShowsActive\(status, sessionId\)/);
+  assert.match(closeBlock, /if \(!stopped\)/);
+  assert.match(closeBlock, /Audio capture is still active\. Click × to retry stopping it\./);
+  assert.doesNotMatch(source, /could not confirm that audio capture stopped/);
+});
+
 test("pipeline activity makes empty analysis and estimated cost visible", async () => {
   const source = await readFile(overlayPath, "utf8");
 

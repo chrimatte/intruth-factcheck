@@ -77,7 +77,7 @@ function loadWorker({ hooks = {}, config = {} } = {}) {
       serperKey: 'serper-test-key',
       transcriptLanguage: 'en',
       privacyConsent: true,
-      privacyConsentVersion: '2026-07-16-v2',
+      privacyConsentVersion: '2026-07-16-v3',
       ...config,
     },
     sessionStorage: {},
@@ -115,6 +115,7 @@ function loadWorker({ hooks = {}, config = {} } = {}) {
         },
         async set(values) {
           const snapshot = clone(values);
+          if (hooks.sessionSet) await hooks.sessionSet(snapshot, state);
           Object.assign(state.sessionStorage, snapshot);
           state.sessionWrites.push(snapshot);
         },
@@ -298,7 +299,9 @@ test('prompts classify opinions, preserve governing negation, and enforce eviden
   assert.match(workerSource, /a current population figure cannot/);
   assert.match(workerSource, /only repeats the same speaker's statement/);
   assert.match(workerSource, /Never mention internal evidence labels/);
-  assert.match(workerSource, /VERDICT_MAX_OUTPUT_TOKENS = 640/);
+  assert.match(workerSource, /Treat direct address such as "you support\.\.\." as unresolved/);
+  assert.match(workerSource, /I never hide what I do/);
+  assert.match(workerSource, /VERDICT_MAX_OUTPUT_TOKENS = 480/);
   assert.match(workerSource, /MAX_CLAIMS_PER_BATCH = 2/);
 });
 
@@ -349,6 +352,10 @@ test('extraction rejects unresolved references and low-information archive fragm
     'Many arrests were made.',
     'Police swooped on the secret headquarters of assassins and rebels.',
     'The rebellion began with a general strike and later became armed.',
+    'You support violent extremists.',
+    'Your allies funded the group.',
+    'In 2025, you funded violent extremists.',
+    'I never hide what I do.',
   ];
   for (const statement of statements) {
     const batch = [{ id: 'U1', text: statement }];
@@ -365,6 +372,106 @@ test('extraction rejects unresolved references and low-information archive fragm
     );
     assert.equal(validated.length, 0, statement);
   }
+});
+
+test('validated claims are restored to transcript order within one model batch', async () => {
+  const harness = loadWorker();
+  await harness.ready();
+  const first = 'Alpha City had 100 residents in 2020.';
+  const second = 'Beta City had 200 residents in 2021.';
+  const batch = [{ id: 'U1', text: `${first} ${second}` }];
+  const input = {
+    claims: [second, first].map(claim => ({
+      statementType: 'FACTUAL',
+      claim,
+      sourceQuotes: [{ sourceSentenceId: 'U1', quote: claim }],
+    })),
+  };
+
+  const validated = vm.runInContext(
+    `validateExtractedClaims(${JSON.stringify(input)}, ${JSON.stringify(batch)})`,
+    harness.sandbox
+  );
+
+  assert.deepEqual(Array.from(validated, item => item.claim), [first, second]);
+});
+
+test('source ranking prefers relevant primary evidence available at the video date', async () => {
+  const harness = loadWorker();
+  await harness.ready();
+  const ranked = vm.runInContext(`rankSourceCandidates(${JSON.stringify([{
+    url: 'https://commentary.example/story',
+    domain: 'commentary.example',
+    title: 'Daniella Weiss sanctioned over support for violence',
+    snippet: 'Daniella Weiss was sanctioned for supporting violence.',
+    date: '2026-05-20',
+  }, {
+    url: 'https://www.gov.uk/official-notice',
+    domain: 'gov.uk',
+    title: 'Official sanctions notice for Daniella Weiss',
+    snippet: 'Daniella Weiss supported acts of aggression and violence.',
+    date: '2025-05-20',
+  }, {
+    url: 'https://www.un.org/unrelated',
+    domain: 'un.org',
+    title: 'Unrelated official release',
+    snippet: 'A different subject is discussed here.',
+    date: '2025-05-19',
+  }])}, 'Daniella Weiss was sanctioned for supporting violence', '2025-07-16')`, harness.sandbox);
+
+  assert.deepEqual(Array.from(ranked, source => source.domain), [
+    'gov.uk',
+    'commentary.example',
+    'un.org',
+  ]);
+
+  const relevanceGate = vm.runInContext(`rankSourceCandidates(${JSON.stringify([{
+    url: 'https://www.un.org/unrelated',
+    domain: 'un.org',
+    title: 'Official statement about an unrelated subject',
+    snippet: 'No matching terms are present.',
+    date: '2025-05-19',
+  }, {
+    url: 'https://relevant.example/report',
+    domain: 'relevant.example',
+    title: 'Alpha Beta independent report',
+    snippet: 'The report documents Alpha Beta.',
+    date: '2025-05-18',
+  }])}, 'Alpha Beta Gamma Delta Epsilon', '2025-07-16')`, harness.sandbox);
+  assert.equal(relevanceGate[0].domain, 'relevant.example');
+
+  const commonTokenGate = vm.runInContext(`rankSourceCandidates(${JSON.stringify([{
+    url: 'https://agency.gov.example/unrelated',
+    domain: 'agency.gov.uk',
+    title: 'The government released the annual report',
+    snippet: 'The government released the report after a scheduled meeting.',
+    date: '2025-05-19',
+  }, {
+    url: 'https://legal-analysis.example/occupation',
+    domain: 'legal-analysis.example',
+    title: 'Court order to end the occupation',
+    snippet: 'The court ordered an end to the occupation.',
+    date: '2025-05-18',
+  }])}, 'The court ordered the government to end the occupation', '2025-07-16')`, harness.sandbox);
+  assert.equal(commonTokenGate[0].domain, 'legal-analysis.example');
+});
+
+test('overlong compound statements are rejected before evidence spending', async () => {
+  const harness = loadWorker();
+  await harness.ready();
+  const claim = `The International Court found the occupation unlawful and ordered it to end rapidly and required all settlement activity to stop immediately and required settlers to be evacuated and required reparations and required states not to recognize the situation and required international organizations not to assist it.`;
+  const input = {
+    claims: [{
+      statementType: 'FACTUAL',
+      claim,
+      sourceQuotes: [{ sourceSentenceId: 'U1', quote: claim }],
+    }],
+  };
+  const validated = vm.runInContext(
+    `validateExtractedClaims(${JSON.stringify(input)}, ${JSON.stringify([{ id: 'U1', text: claim }])})`,
+    harness.sandbox
+  );
+  assert.equal(validated.length, 0);
 });
 
 test('extraction accepts a central statement resolved from adjacent target utterances', async () => {
@@ -568,6 +675,589 @@ test('STOP aborts provider work immediately, ignores tail audio for analysis, an
   assert.equal(status.phase, 'INACTIVE');
 });
 
+test('seeking clears transcript windows, drops queued pre-seek text, and forwards only trusted events', async () => {
+  const harness = loadWorker();
+  await harness.ready();
+  const sessionId = 'session_timeline_boundary';
+  await startSession(harness, sessionId);
+
+  const firstTranscript = await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    text: 'The first timeline contains a factual statement.',
+    isFinal: true,
+    confidence: 0.99,
+  }, offscreenSender());
+  assert.equal(firstTranscript.queued, true);
+  await eventually(
+    () => vm.runInContext('activeSession.pendingSentences.length === 1', harness.sandbox),
+    'the pre-seek sentence was not queued'
+  );
+  assert.equal(vm.runInContext('activeSession.contextSentences.length', harness.sandbox), 1);
+  assert.notEqual(vm.runInContext('activeSession.flushTimer', harness.sandbox), null);
+
+  const transcriptGate = deferred();
+  harness.sandbox.transcriptGate = transcriptGate.promise;
+  vm.runInContext('activeSession.transcriptQueue = transcriptGate', harness.sandbox);
+  const delayedTranscript = await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    text: 'This old queued sentence must not cross the seek boundary.',
+    isFinal: true,
+    confidence: 0.99,
+  }, offscreenSender());
+  assert.equal(delayedTranscript.queued, true);
+
+  const seeking = await harness.message({
+    type: 'MEDIA_TIMELINE_EVENT',
+    sessionId,
+    phase: 'seeking',
+    epoch: 7,
+    currentTime: 512.25,
+    paused: false,
+    playbackRate: 1.5,
+  }, activeTabSender());
+  assert.equal(seeking.ok, true, seeking.error);
+  assert.equal(seeking.epoch, 7);
+  assert.equal(
+    harness.state.sessionStorage[SESSION_STATE_KEY].timelineEpoch,
+    7,
+    'the hard seek boundary must survive an MV3 worker restart'
+  );
+  assert.equal(vm.runInContext('activeSession.pendingSentences.length', harness.sandbox), 0);
+  assert.equal(vm.runInContext('activeSession.contextSentences.length', harness.sandbox), 0);
+  assert.equal(vm.runInContext('activeSession.pendingSince', harness.sandbox), null);
+  assert.equal(vm.runInContext('activeSession.flushTimer', harness.sandbox), null);
+
+  transcriptGate.resolve();
+  await vm.runInContext('activeSession.transcriptQueue', harness.sandbox);
+  assert.equal(
+    vm.runInContext('activeSession.pendingSentences.length', harness.sandbox),
+    0,
+    'a transcript queued before seeking was processed after the boundary'
+  );
+
+  const forwarded = harness.state.runtimeMessages.find(message => (
+    message.type === 'MEDIA_TIMELINE_EVENT' && message.phase === 'seeking'
+  ));
+  assert.deepEqual(forwarded, {
+    type: 'MEDIA_TIMELINE_EVENT',
+    sessionId,
+    phase: 'seeking',
+    epoch: 7,
+    currentTime: 512.25,
+    paused: false,
+    playbackRate: 1.5,
+  });
+
+  const forwardedCount = harness.state.runtimeMessages
+    .filter(message => message.type === 'MEDIA_TIMELINE_EVENT').length;
+  const wrongTab = await harness.message({
+    type: 'MEDIA_TIMELINE_EVENT',
+    sessionId,
+    phase: 'seeked',
+    epoch: 7,
+  }, activeTabSender(999));
+  assert.equal(wrongTab.ok, false);
+  assert.equal(wrongTab.code, 'UNTRUSTED_TIMELINE_EVENT');
+
+  const staleSession = await harness.message({
+    type: 'MEDIA_TIMELINE_EVENT',
+    sessionId: 'session_stale_timeline',
+    phase: 'seeked',
+    epoch: 7,
+  }, activeTabSender());
+  assert.equal(staleSession.ok, false);
+  assert.equal(staleSession.code, 'STALE_SESSION');
+  assert.equal(
+    harness.state.runtimeMessages.filter(message => message.type === 'MEDIA_TIMELINE_EVENT').length,
+    forwardedCount,
+    'an untrusted or stale event was forwarded to offscreen capture'
+  );
+
+  const oldAudio = await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    timelineEpoch: 0,
+    text: 'Old audio must not be accepted after seeking.',
+    isFinal: true,
+  }, offscreenSender());
+  assert.equal(oldAudio.ok, false);
+  assert.equal(oldAudio.code, 'STALE_TIMELINE_EVENT');
+
+  const staleSeeking = await harness.message({
+    type: 'MEDIA_TIMELINE_EVENT',
+    sessionId,
+    phase: 'seeking',
+    epoch: 6,
+    currentTime: 400,
+  }, activeTabSender());
+  assert.equal(staleSeeking.ok, false);
+  assert.equal(staleSeeking.code, 'STALE_TIMELINE_EVENT');
+  assert.equal(vm.runInContext('activeSession.timelineEpoch', harness.sandbox), 7);
+
+  const unversionedAudio = await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    text: 'Unversioned audio is unsafe after a seek boundary.',
+    isFinal: true,
+  }, offscreenSender());
+  assert.equal(unversionedAudio.ok, false);
+  assert.equal(unversionedAudio.code, 'STALE_TIMELINE_EVENT');
+
+  const currentAudio = await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    timelineEpoch: 7,
+    text: 'Current timeline audio remains analyzable.',
+    isFinal: true,
+    confidence: 0.99,
+  }, offscreenSender());
+  assert.equal(currentAudio.ok, true);
+  assert.equal(currentAudio.queued, true);
+  const overlayTranscript = harness.state.tabMessages.find(entry => (
+    entry.message.type === 'TRANSCRIPT_RESULT' &&
+    entry.message.text === 'Current timeline audio remains analyzable.'
+  ));
+  assert.equal(overlayTranscript.message.timelineEpoch, 7);
+
+  const paused = await harness.message({
+    type: 'MEDIA_TIMELINE_EVENT',
+    sessionId,
+    phase: 'paused',
+    epoch: 7,
+    currentTime: 513,
+  }, activeTabSender());
+  const playing = await harness.message({
+    type: 'MEDIA_TIMELINE_EVENT',
+    sessionId,
+    phase: 'playing',
+    epoch: 7,
+    currentTime: 513,
+  }, activeTabSender());
+  assert.equal(paused.ok, true);
+  assert.equal(playing.ok, true);
+  assert.deepEqual(
+    harness.state.runtimeMessages
+      .filter(message => message.type === 'MEDIA_TIMELINE_EVENT')
+      .slice(-2)
+      .map(message => message.phase),
+    ['paused', 'playing']
+  );
+
+  const stopped = await harness.message(
+    { type: 'STOP_FACTCHECK', sessionId },
+    popupSender()
+  );
+  assert.equal(stopped.ok, true);
+});
+
+test('concurrent seeking and seeked events preserve persistence and offscreen delivery order', async () => {
+  const firstTimelinePersistStarted = deferred();
+  const releaseFirstTimelinePersist = deferred();
+  let timelinePersistCount = 0;
+  const harness = loadWorker({
+    hooks: {
+      async sessionSet(values) {
+        const persisted = values[SESSION_STATE_KEY];
+        if (persisted?.timelineEpoch !== 9) return;
+        timelinePersistCount++;
+        if (timelinePersistCount === 1) {
+          firstTimelinePersistStarted.resolve();
+          await releaseFirstTimelinePersist.promise;
+        }
+      },
+    },
+  });
+  await harness.ready();
+  const sessionId = 'session_timeline_concurrency';
+  await startSession(harness, sessionId);
+
+  const seekingPromise = harness.message({
+    type: 'MEDIA_TIMELINE_EVENT',
+    sessionId,
+    phase: 'seeking',
+    epoch: 9,
+    currentTime: 720,
+    paused: false,
+    playbackRate: 1,
+  }, activeTabSender());
+  await firstTimelinePersistStarted.promise;
+
+  const seekedPromise = harness.message({
+    type: 'MEDIA_TIMELINE_EVENT',
+    sessionId,
+    phase: 'seeked',
+    epoch: 9,
+    currentTime: 720.25,
+    paused: false,
+    playbackRate: 1,
+  }, activeTabSender());
+
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(
+    harness.state.runtimeMessages.some(message => message.type === 'MEDIA_TIMELINE_EVENT'),
+    false,
+    'seeked overtook the delayed seeking persistence boundary'
+  );
+
+  releaseFirstTimelinePersist.resolve();
+  const [seeking, seeked] = await Promise.all([seekingPromise, seekedPromise]);
+  assert.equal(seeking.ok, true, seeking.error);
+  assert.equal(seeked.ok, true, seeked.error);
+  assert.deepEqual(
+    harness.state.runtimeMessages
+      .filter(message => message.type === 'MEDIA_TIMELINE_EVENT')
+      .map(message => message.phase),
+    ['seeking', 'seeked']
+  );
+  assert.equal(timelinePersistCount, 2);
+  assert.equal(vm.runInContext('activeSession.timelineEpoch', harness.sandbox), 9);
+  await vm.runInContext('activeSession.timelineQueue', harness.sandbox);
+
+  const stopped = await harness.message(
+    { type: 'STOP_FACTCHECK', sessionId },
+    popupSender()
+  );
+  assert.equal(stopped.ok, true);
+});
+
+test('offscreen recovery diagnostics are forwarded to the overlay without losing fields', async () => {
+  const harness = loadWorker();
+  await harness.ready();
+  const sessionId = 'session_pipeline_status';
+  await startSession(harness, sessionId);
+
+  const response = await harness.message({
+    type: 'PIPELINE_STATUS',
+    sessionId,
+    status: 'backpressure',
+    sampleRate: 48000,
+    language: 'en',
+    reason: 'socket_busy',
+    timelineEpoch: 3,
+    droppedFrames: 17,
+    bufferedBytes: 262144,
+    currentTime: 812.5,
+  }, offscreenSender());
+  assert.equal(response.ok, true, response.error);
+
+  const forwarded = harness.state.tabMessages.findLast(entry => (
+    entry.message.type === 'PIPELINE_STATUS' && entry.message.status === 'backpressure'
+  ));
+  assert.deepEqual(forwarded.message, {
+    type: 'PIPELINE_STATUS',
+    sessionId,
+    status: 'backpressure',
+    sampleRate: 48000,
+    language: 'en',
+    reason: 'socket_busy',
+    timelineEpoch: 3,
+    droppedFrames: 17,
+    bufferedBytes: 262144,
+    currentTime: 812.5,
+  });
+
+  await harness.message({ type: 'STOP_FACTCHECK', sessionId }, popupSender());
+});
+
+test('a full tab-stream refresh inherits the latest media timeline epoch', async () => {
+  const harness = loadWorker();
+  await harness.ready();
+  const sessionId = 'session_refresh_epoch';
+  await startSession(harness, sessionId);
+
+  const seeking = await harness.message({
+    type: 'MEDIA_TIMELINE_EVENT',
+    sessionId,
+    phase: 'seeking',
+    epoch: 4,
+    currentTime: 420,
+    paused: false,
+    playbackRate: 1,
+  }, activeTabSender());
+  assert.equal(seeking.ok, true, seeking.error);
+
+  const refreshed = await harness.message({
+    type: 'REQUEST_NEW_STREAM',
+    sessionId,
+  }, offscreenSender());
+  assert.equal(refreshed.ok, true, refreshed.error);
+
+  const captureStarts = harness.state.runtimeMessages.filter(message => (
+    message.type === 'START_CAPTURE'
+  ));
+  assert.equal(captureStarts.length, 2);
+  assert.deepEqual(captureStarts.map(message => message.timelineEpoch), [0, 4]);
+
+  const stopped = await harness.message(
+    { type: 'STOP_FACTCHECK', sessionId },
+    popupSender()
+  );
+  assert.equal(stopped.ok, true);
+});
+
+test('an ignored timeline delivery is retried and never reported as success', async () => {
+  let timelineAttempts = 0;
+  const harness = loadWorker({
+    hooks: {
+      runtimeSend(message) {
+        if (message.type === 'MEDIA_TIMELINE_EVENT') {
+          timelineAttempts++;
+          if (timelineAttempts === 1) {
+            return {
+              ok: false,
+              ignored: true,
+              code: 'CAPTURE_CONTEXT_UNAVAILABLE',
+              error: 'capture refresh in progress',
+            };
+          }
+        }
+        return { ok: true, sessionId: message.sessionId };
+      },
+    },
+  });
+  await harness.ready();
+  const sessionId = 'session_timeline_retry';
+  await startSession(harness, sessionId);
+
+  const seeking = await harness.message({
+    type: 'MEDIA_TIMELINE_EVENT',
+    sessionId,
+    phase: 'seeking',
+    epoch: 1,
+    currentTime: 90,
+    paused: false,
+    playbackRate: 1,
+  }, activeTabSender());
+
+  assert.equal(seeking.ok, true, seeking.error);
+  assert.equal(timelineAttempts, 2);
+
+  const stopped = await harness.message(
+    { type: 'STOP_FACTCHECK', sessionId },
+    popupSender()
+  );
+  assert.equal(stopped.ok, true);
+});
+
+test('a seek invalidates an Anthropic extraction response from the previous timeline', async () => {
+  const extractionGate = deferred();
+  let extractionStarted = false;
+  const claim = 'Alpha City had 100 residents in 2020.';
+  const hooks = {
+    fetch(url) {
+      if (url.includes('anthropic.com')) {
+        extractionStarted = true;
+        return extractionGate.promise;
+      }
+      throw new Error(`stale extraction unexpectedly reached evidence search: ${url}`);
+    },
+  };
+  const harness = loadWorker({ hooks });
+  await harness.ready();
+  const sessionId = 'session_stale_extraction';
+  await startSession(harness, sessionId);
+
+  const transcript = await harness.message({
+    type: 'TRANSCRIPT_RESULT',
+    sessionId,
+    timelineEpoch: 0,
+    text: `${claim} Sentence two is factual. Sentence three is factual. Sentence four is factual. Sentence five is factual. Sentence six is factual.`,
+    isFinal: true,
+    confidence: 0.99,
+  }, offscreenSender());
+  assert.equal(transcript.queued, true);
+  await eventually(() => extractionStarted, 'the pre-seek extraction did not start');
+
+  const seeking = await harness.message({
+    type: 'MEDIA_TIMELINE_EVENT',
+    sessionId,
+    phase: 'seeking',
+    epoch: 1,
+    currentTime: 300,
+  }, activeTabSender());
+  assert.equal(seeking.ok, true, seeking.error);
+
+  extractionGate.resolve(jsonResponse({
+    usage: { input_tokens: 100, output_tokens: 20 },
+    content: [{
+      type: 'tool_use',
+      name: 'emit_claims',
+      input: {
+        claims: [{
+          statementType: 'FACTUAL',
+          claim,
+          sourceQuotes: [{ sourceSentenceId: 'U1', quote: claim }],
+        }],
+      },
+    }],
+  }));
+  await vm.runInContext('activeSession.extractionQueue', harness.sandbox);
+
+  assert.equal(vm.runInContext('activeSession.claims.size', harness.sandbox), 0);
+  assert.equal(vm.runInContext('activeSession.totalClaims', harness.sandbox), 0);
+  assert.equal(
+    harness.state.tabMessages.some(entry => entry.message.type === 'NEW_VERDICT'),
+    false,
+    'a stale extraction result created a claim after seeking'
+  );
+
+  const stopped = await harness.message(
+    { type: 'STOP_FACTCHECK', sessionId },
+    popupSender()
+  );
+  assert.equal(stopped.ok, true);
+});
+
+test('STOP_CAPTURE preempts an in-flight capture refresh before lifecycle cleanup', async () => {
+  const refreshGate = deferred();
+  let startCount = 0;
+  let refreshPending = false;
+  let stoppedWhileRefreshPending = false;
+  const hooks = {
+    runtimeSend(message) {
+      if (message.type === 'START_CAPTURE') {
+        startCount++;
+        if (startCount === 1) return { ok: true, sessionId: message.sessionId };
+        refreshPending = true;
+        return refreshGate.promise.finally(() => {
+          refreshPending = false;
+        });
+      }
+      if (message.type === 'STOP_CAPTURE') {
+        if (refreshPending) {
+          stoppedWhileRefreshPending = true;
+          refreshGate.resolve({ ok: true, sessionId: message.sessionId });
+        }
+        return { ok: true, sessionId: message.sessionId };
+      }
+      return { ok: true };
+    },
+  };
+  const harness = loadWorker({ hooks });
+  await harness.ready();
+  const sessionId = 'session_refresh_preemption';
+  await startSession(harness, sessionId);
+
+  const reconnect = harness.message({
+    type: 'REQUEST_NEW_STREAM',
+    sessionId,
+  }, offscreenSender());
+  await eventually(() => startCount === 2, 'capture refresh did not reach START_CAPTURE');
+  assert.equal(refreshPending, true);
+
+  const stopping = harness.message(
+    { type: 'STOP_FACTCHECK', sessionId },
+    popupSender()
+  );
+  await eventually(
+    () => harness.state.runtimeMessages.some(message => message.type === 'STOP_CAPTURE'),
+    'the immediate STOP_CAPTURE request was not sent'
+  );
+  assert.equal(
+    stoppedWhileRefreshPending,
+    true,
+    'STOP_CAPTURE waited for the serialized refresh to finish'
+  );
+
+  const reconnectResult = await reconnect;
+  assert.equal(reconnectResult.ok, false);
+  assert.equal(reconnectResult.code, 'SESSION_ABORTED');
+  const stopped = await stopping;
+  assert.equal(stopped.ok, true, stopped.error);
+  assert.equal(stopped.alreadyStopped, false);
+
+  const messageTypes = harness.state.runtimeMessages.map(message => message.type);
+  const refreshStartIndex = messageTypes.lastIndexOf('START_CAPTURE');
+  const firstStopIndex = messageTypes.indexOf('STOP_CAPTURE');
+  assert.ok(firstStopIndex > refreshStartIndex, messageTypes.join(', '));
+  assert.equal(harness.state.offscreenCreated, false);
+});
+
+test('failed STOP_CAPTURE tears down offscreen before public status releases a draining stop', async () => {
+  const deliveryGate = deferred();
+  let deliveryPending = false;
+  let offscreenClosedBeforeDelivery = false;
+  const hooks = {
+    runtimeSend(message) {
+      if (message.type === 'START_CAPTURE') {
+        return { ok: true, sessionId: message.sessionId };
+      }
+      if (message.type === 'STOP_CAPTURE') {
+        return Promise.reject(new Error('offscreen stop channel failed'));
+      }
+      return { ok: true };
+    },
+    tabSend(_tabId, message, state) {
+      if (message.type === 'PING') {
+        return {
+          ok: true,
+          type: 'PONG',
+          requestId: message.requestId,
+          sessionId: message.sessionId,
+          isActive: false,
+        };
+      }
+      if (message.type === 'UPDATE_VERDICTS') {
+        deliveryPending = true;
+        offscreenClosedBeforeDelivery = !state.offscreenCreated;
+        return deliveryGate.promise;
+      }
+      return { ok: true };
+    },
+  };
+  const harness = loadWorker({ hooks });
+  await harness.ready();
+  const sessionId = 'session_close_during_delivery';
+  await startSession(harness, sessionId);
+
+  vm.runInContext(`activeSession.claims.set('claim_pending_delivery', {
+    sessionId: activeSession.id,
+    claimId: 'claim_pending_delivery',
+    claim: 'The documented annual rate was 4.2 percent.',
+    statementType: 'FACTUAL',
+    sourceSentenceIds: ['U1'],
+    sourceQuotes: [{ sourceSentenceId: 'U1', quote: 'The documented annual rate was 4.2 percent.' }],
+    timelineEpoch: 0,
+    speaker: null,
+    dominantSpeakerId: null,
+    asrConfidence: 0.99,
+    lexical: null,
+    state: 'COMPLETE',
+    finalResult: {
+      verdict: 'TRUE',
+      status: 'COMPLETE',
+      pending: false,
+      confidence: 'HIGH',
+      explanation: 'The evidence supports the statement.',
+      sources: [],
+      citations: []
+    },
+    delivered: false,
+    normalizedKey: 'the documented annual rate was 4.2 percent'
+  });`, harness.sandbox);
+
+  const stopping = harness.message(
+    { type: 'STOP_FACTCHECK', sessionId },
+    popupSender()
+  );
+  await eventually(() => deliveryPending, 'terminal verdict delivery did not begin');
+
+  const drainingStatus = await harness.message({ type: 'GET_STATUS' });
+  assert.equal(offscreenClosedBeforeDelivery, true);
+  assert.equal(harness.state.offscreenCreated, false);
+  assert.equal(harness.state.offscreenCloseCount, 1);
+  assert.equal(drainingStatus.isCapturing, false);
+  assert.equal(drainingStatus.phase, 'STOPPING');
+  assert.equal(drainingStatus.sessionId, sessionId);
+
+  deliveryGate.resolve({ ok: true });
+  const stopped = await stopping;
+  assert.equal(stopped.ok, true, stopped.error);
+  assert.equal(stopped.alreadyStopped, false);
+});
+
 test('terminal outbox is durable before delivery and retries a transient overlay failure', async () => {
   const claim = 'The annual rate was 4.2 percent in December 2025.';
   let updateAttempts = 0;
@@ -687,10 +1377,10 @@ test('terminal outbox is durable before delivery and retries a transient overlay
     anthropicBodies.map(body => body.model),
     ['claude-haiku-4-5-20251001', 'claude-haiku-4-5-20251001']
   );
-  assert.deepEqual(anthropicBodies.map(body => body.max_tokens), [520, 640]);
+  assert.deepEqual(anthropicBodies.map(body => body.max_tokens), [520, 480]);
   assert.equal(
     anthropicBodies[1].tools[0].input_schema.properties.explanation.maxLength,
-    360
+    240
   );
   assert.equal(
     anthropicBodies[1].tools[0].input_schema.properties.citations.maxItems,

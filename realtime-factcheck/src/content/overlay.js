@@ -45,6 +45,15 @@ let overlayIntegrityFailed = false;
 let panelStylesheetReady = false;
 const managedTimeouts = new Set();
 
+let mediaTimelineAbortController = null;
+let mediaElementAbortController = null;
+let mediaTimelineObserver = null;
+let mediaTimelineRebindFrame = null;
+let observedMediaElement = null;
+let hasObservedMediaElement = false;
+let mediaTimelineSeeking = false;
+let mediaTimelineEpoch = 0;
+
 let transcriptCollapsed = false;
 let sessionIsLive = false;
 let activeSessionId = null;
@@ -128,6 +137,53 @@ function sendRuntimeRequest(message, timeoutMs = 8000) {
       reject(error);
     }
   });
+}
+
+function captureStatusShowsActive(status, sessionId) {
+  if (!status || typeof status !== 'object') return false;
+  const statusSessionId = getSessionId(status);
+  const belongsToSession = !statusSessionId || statusSessionId === String(sessionId || '');
+  if (!belongsToSession) return false;
+  if (status.isCapturing === true) return true;
+  const phase = String(status.phase || '').toUpperCase();
+  if (phase === 'STOPPING' && status.isCapturing === false) return false;
+  return phase === 'STARTING' || phase === 'ACTIVE' || phase === 'STOPPING';
+}
+
+function resultMatchesMediaTimeline(result, message = null) {
+  const rawEpoch = result?.timelineEpoch ?? message?.timelineEpoch;
+  const epoch = Number(rawEpoch);
+  const hasEpoch = Number.isSafeInteger(epoch) && epoch >= 0;
+  if (hasEpoch && epoch === mediaTimelineEpoch) return true;
+
+  // A terminal update from an older epoch may complete a card that was already
+  // shown before the user sought. Never create a new stale card after the seek.
+  const claimId = explicitClaimId(result, message);
+  const existing = claimId ? claimRecords.get(claimId) : null;
+  if (existing) {
+    const existingEpoch = Number(existing.result?.timelineEpoch);
+    return hasEpoch && Number.isSafeInteger(existingEpoch) && existingEpoch === epoch;
+  }
+  return !hasEpoch && mediaTimelineEpoch === 0;
+}
+
+async function stopCaptureForPanelClose(sessionId) {
+  try {
+    await sendRuntimeRequest({ type: 'STOP_FACTCHECK', sessionId });
+    return true;
+  } catch (stopError) {
+    try {
+      const status = await sendRuntimeRequest({ type: 'GET_STATUS' }, 2500);
+      if (captureStatusShowsActive(status, sessionId)) return false;
+      return true;
+    } catch (statusError) {
+      // A missing response is not proof that capture is active. Retry the stop
+      // without holding the only visible close control hostage to a lost reply.
+      console.warn('[InTruth] Stop status could not be confirmed.', stopError, statusError);
+      sendRuntimeMessage({ type: 'STOP_FACTCHECK', sessionId });
+      return true;
+    }
+  }
 }
 
 function setManagedTimeout(callback, delay) {
@@ -795,6 +851,9 @@ function updatePipelineActivity(message) {
   if (!activityEl || !message?.metrics || typeof message.metrics !== 'object') return;
   const metrics = message.metrics;
   latestPipelineMetrics = metrics;
+  if (typeof recordSessionMetricsDiagnostic === 'function') {
+    recordSessionMetricsDiagnostic(metrics);
+  }
   const status = String(message.status || '').toLowerCase();
   const labels = {
     listening: 'Listening for statements',
@@ -952,21 +1011,23 @@ function installPanelEvents() {
 
     if (target.id === 'rtfc-close') {
       if (sessionIsLive) {
+        const closingPanel = panel;
+        const closingSessionId = activeSessionId;
         target.disabled = true;
         target.setAttribute('aria-busy', 'true');
         if (sessionStatusEl) sessionStatusEl.textContent = 'Stopping analysis…';
-        try {
-          await sendRuntimeRequest({ type: 'STOP_FACTCHECK', sessionId: activeSessionId });
-        } catch (_error) {
+        const stopped = await stopCaptureForPanelClose(closingSessionId);
+        if (panel !== closingPanel) return;
+        if (!stopped) {
           target.disabled = false;
           target.removeAttribute('aria-busy');
           if (sessionStatusEl) sessionStatusEl.textContent = 'Analysis active';
-          showError('InTruth could not confirm that audio capture stopped. Keep this panel open and retry.', {
+          showError('Audio capture is still active. Click × to retry stopping it.', {
             persistent: true,
           });
           return;
         }
-        if (sessionIsLive) finishSession();
+        if (sessionIsLive && activeSessionId === closingSessionId) finishSession();
       }
       removePanel();
       return;
@@ -1309,6 +1370,7 @@ function clearOverlayState() {
 
 function removePanel() {
   panelRemovalExpected = true;
+  teardownMediaTimelineEvents();
   panelHostObserver?.disconnect();
   panelHostObserver = null;
   clearManagedTimeouts();
@@ -1337,6 +1399,7 @@ function removePanel() {
 
 function finishSession() {
   if (!panel || !sessionIsLive) return;
+  teardownMediaTimelineEvents();
   clearManagedTimeouts();
 
   for (const record of claimRecords.values()) {
@@ -1386,6 +1449,7 @@ function beginSession(message) {
   clearOverlayState();
   startSession(activeSessionId);
   createPanel();
+  installMediaTimelineEvents();
 
   speakers = parseSpeakersFromTitle(document.title || '');
   renderSpeakerEditor();
@@ -1398,9 +1462,10 @@ function beginSession(message) {
         document.querySelector('meta[property="og:updated_time"]');
       if (!element?.content) return '';
       const date = new Date(element.content);
-      return Number.isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, {
-        year: 'numeric', month: 'long', day: 'numeric',
-      });
+      // Keep the machine-readable value locale independent. The worker compares
+      // evidence publication dates against the video date; localized strings such
+      // as "16 luglio 2026" are not reliably understood by Date.parse().
+      return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
     })(),
   });
 }
@@ -1426,6 +1491,164 @@ function clearInterim() {
   if (interimEl) interimEl.textContent = '';
 }
 
+function resetMediaTimelineBoundary() {
+  clearInterim();
+  sentenceTimestamps.length = 0;
+  lastTranscriptTimestamp = '';
+  lastActiveSpeaker = null;
+}
+
+function sendMediaTimelineEvent(phase, video, reason) {
+  if (!sessionIsLive || !activeSessionId || !video) return;
+  const rawCurrentTime = Number(video.currentTime);
+  const rawPlaybackRate = Number(video.playbackRate);
+  sendRuntimeMessage({
+    type: 'MEDIA_TIMELINE_EVENT',
+    sessionId: activeSessionId,
+    phase,
+    epoch: mediaTimelineEpoch,
+    currentTime: Number.isFinite(rawCurrentTime) && rawCurrentTime >= 0 ? rawCurrentTime : 0,
+    paused: Boolean(video.paused),
+    playbackRate: Number.isFinite(rawPlaybackRate) && rawPlaybackRate > 0 ? rawPlaybackRate : 1,
+    reason,
+  });
+}
+
+function beginMediaTimelineBoundary(video, reason) {
+  mediaTimelineEpoch += 1;
+  mediaTimelineSeeking = true;
+  resetMediaTimelineBoundary();
+  if (typeof recordTimelineDiagnostic === 'function') {
+    recordTimelineDiagnostic(mediaTimelineEpoch, {
+      phase: 'seeking',
+      reason,
+      currentTime: Number(video?.currentTime),
+    });
+  }
+  sendMediaTimelineEvent('seeking', video, reason);
+}
+
+function completeMediaTimelineBoundary(video, reason) {
+  if (!mediaTimelineSeeking) beginMediaTimelineBoundary(video, reason);
+  mediaTimelineSeeking = false;
+  sendMediaTimelineEvent('seeked', video, reason);
+}
+
+function bindMediaTimelineElement(video) {
+  const nextVideo = video || null;
+  if (nextVideo === observedMediaElement && mediaElementAbortController) return;
+
+  const isReplacement = Boolean(
+    nextVideo && hasObservedMediaElement && nextVideo !== observedMediaElement
+  );
+  mediaElementAbortController?.abort();
+  mediaElementAbortController = null;
+  observedMediaElement = nextVideo;
+  if (!nextVideo) return;
+
+  const expectedSessionId = activeSessionId;
+  mediaElementAbortController = new AbortController();
+  const { signal } = mediaElementAbortController;
+  nextVideo.addEventListener('seeking', () => {
+    if (
+      !sessionIsLive ||
+      activeSessionId !== expectedSessionId ||
+      observedMediaElement !== nextVideo
+    ) return;
+    beginMediaTimelineBoundary(nextVideo, 'user_seek');
+  }, { signal });
+  nextVideo.addEventListener('seeked', () => {
+    if (
+      !sessionIsLive ||
+      activeSessionId !== expectedSessionId ||
+      observedMediaElement !== nextVideo
+    ) return;
+    completeMediaTimelineBoundary(nextVideo, 'user_seek');
+  }, { signal });
+  nextVideo.addEventListener('pause', () => {
+    if (
+      !sessionIsLive ||
+      activeSessionId !== expectedSessionId ||
+      observedMediaElement !== nextVideo
+    ) return;
+    sendMediaTimelineEvent('paused', nextVideo, 'playback_state');
+  }, { signal });
+  nextVideo.addEventListener('play', () => {
+    if (
+      !sessionIsLive ||
+      activeSessionId !== expectedSessionId ||
+      observedMediaElement !== nextVideo
+    ) return;
+    sendMediaTimelineEvent('playing', nextVideo, 'playback_state');
+  }, { signal });
+
+  if (isReplacement) {
+    beginMediaTimelineBoundary(nextVideo, 'media_replaced');
+    completeMediaTimelineBoundary(nextVideo, 'media_replaced');
+  }
+  hasObservedMediaElement = true;
+  sendMediaTimelineEvent(nextVideo.paused ? 'paused' : 'playing', nextVideo, 'media_bound');
+}
+
+function findMediaElement() {
+  return document.querySelector('#movie_player video.html5-main-video') ||
+    document.querySelector('video');
+}
+
+function scheduleMediaTimelineRebind() {
+  if (mediaTimelineRebindFrame !== null || !sessionIsLive) return;
+  mediaTimelineRebindFrame = window.requestAnimationFrame(() => {
+    mediaTimelineRebindFrame = null;
+    if (!sessionIsLive) return;
+    bindMediaTimelineElement(findMediaElement());
+  });
+}
+
+function mutationContainsMediaElement(mutation) {
+  const nodes = [...mutation.addedNodes, ...mutation.removedNodes];
+  return nodes.some((node) =>
+    node?.nodeType === Node.ELEMENT_NODE &&
+    (node.matches?.('video') || node.querySelector?.('video'))
+  );
+}
+
+function installMediaTimelineEvents() {
+  teardownMediaTimelineEvents();
+  if (!sessionIsLive || !activeSessionId) return;
+
+  mediaTimelineAbortController = new AbortController();
+  document.addEventListener('yt-navigate-finish', scheduleMediaTimelineRebind, {
+    signal: mediaTimelineAbortController.signal,
+  });
+  bindMediaTimelineElement(findMediaElement());
+
+  mediaTimelineObserver = new MutationObserver((mutations) => {
+    if (!observedMediaElement?.isConnected || mutations.some(mutationContainsMediaElement)) {
+      scheduleMediaTimelineRebind();
+    }
+  });
+  if (document.documentElement) {
+    mediaTimelineObserver.observe(document.documentElement, { childList: true, subtree: true });
+  }
+}
+
+function teardownMediaTimelineEvents() {
+  mediaTimelineObserver?.disconnect();
+  mediaTimelineObserver = null;
+  mediaTimelineAbortController?.abort();
+  mediaTimelineAbortController = null;
+  mediaElementAbortController?.abort();
+  mediaElementAbortController = null;
+  if (mediaTimelineRebindFrame !== null) {
+    window.cancelAnimationFrame(mediaTimelineRebindFrame);
+    mediaTimelineRebindFrame = null;
+  }
+  observedMediaElement = null;
+  hasObservedMediaElement = false;
+  mediaTimelineSeeking = false;
+  mediaTimelineEpoch = 0;
+}
+
 function estimateUtteranceStartSeconds(currentTime, duration, playbackRate) {
   const current = Number(currentTime);
   const safeCurrent = Number.isFinite(current) && current >= 0 ? current : 0;
@@ -1446,7 +1669,7 @@ function formatVideoTimestamp(value) {
 }
 
 function getVideoTimestamp(message = null) {
-  const video = document.querySelector('video');
+  const video = findMediaElement();
   if (!video) return '';
   const timestamp = message
     ? estimateUtteranceStartSeconds(video.currentTime, message.duration, video.playbackRate)
@@ -1502,6 +1725,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   switch (message.type) {
     case 'TRANSCRIPT_RESULT':
+      if (mediaTimelineSeeking || !resultMatchesMediaTimeline(message, message)) break;
       if (message.interim) {
         updateInterim(message.text);
       } else if (message.isFinal) {
@@ -1509,6 +1733,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         lastTranscriptTimestamp = timestamp;
         sentenceTimestamps.push({ text: message.text || '', timestamp });
         if (sentenceTimestamps.length > MAX_TIMESTAMP_BUFFER) sentenceTimestamps.shift();
+        if (typeof recordTranscriptDiagnostic === 'function') {
+          recordTranscriptDiagnostic(message.text, timestamp, message.timelineEpoch);
+        }
         clearInterim();
         const displayText = String(message.text || '').replace(/^\[.*?\]\s*/, '');
         addTranscriptText(displayText);
@@ -1522,6 +1749,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       break;
 
     case 'PIPELINE_ERROR':
+      if (typeof recordCaptureDiagnostic === 'function' && !message.claimId) {
+        recordCaptureDiagnostic(
+          message.code === 'AUDIO_CAPTURE_STALLED' ? 'audio_capture_stalled' : 'warning',
+          {
+            ...message,
+            timelineEpoch: message.timelineEpoch ?? mediaTimelineEpoch,
+            currentTime: message.currentTime ?? Number(observedMediaElement?.currentTime),
+          }
+        );
+      }
       if (message.claimId) {
         applyClaimResult({
           claimId: message.claimId,
@@ -1538,6 +1775,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
     case 'PIPELINE_STATUS': {
       const status = String(message.status || '').toLowerCase();
+      if (typeof recordCaptureDiagnostic === 'function') {
+        recordCaptureDiagnostic(status, {
+          ...message,
+          timelineEpoch: message.timelineEpoch ?? mediaTimelineEpoch,
+          currentTime: message.currentTime ?? Number(observedMediaElement?.currentTime),
+        });
+      }
       if (status === 'listening' || status === 'backpressure_recovered') {
         panel.querySelector('.rtfc-error-toast')?.remove();
         panel.dataset.sessionState = 'live';
@@ -1556,7 +1800,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case 'NEW_CLAIM':
     case 'NEW_VERDICT': {
       const results = Array.isArray(message.results) ? message.results : (message.result ? [message.result] : []);
-      results.forEach((result) => addCheckingClaim(result, message));
+      results
+        .filter(result => resultMatchesMediaTimeline(result, message))
+        .forEach((result) => addCheckingClaim(result, message));
       break;
     }
 
@@ -1565,7 +1811,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case 'UPDATE_VERDICT':
     case 'UPDATE_VERDICTS': {
       const results = Array.isArray(message.results) ? message.results : (message.result ? [message.result] : []);
-      results.forEach((result) => applyClaimResult(result, message));
+      results
+        .filter(result => resultMatchesMediaTimeline(result, message))
+        .forEach((result) => applyClaimResult(result, message));
       break;
     }
 

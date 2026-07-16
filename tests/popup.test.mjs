@@ -12,7 +12,7 @@ const popupHtml = await readFile(
   'utf8'
 );
 
-const CURRENT_NOTICE = '2026-07-16-v2';
+const CURRENT_NOTICE = '2026-07-16-v3';
 const SUPPORTED_TAB = {
   id: 42,
   url: 'https://www.youtube.com/watch?v=test-video',

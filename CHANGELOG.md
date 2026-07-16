@@ -2,7 +2,28 @@
 
 All notable changes are documented here. This project uses semantic versions for the checked-in extension.
 
-## [2.0.4] - Unreleased
+## [2.0.5] - Unreleased
+
+### Added
+
+- Timeline epochs now follow media seek events through the overlay, worker, offscreen transcript, analysis windows, claims, and verdicts; privacy-safe HTML diagnostics report transcript counts, timeline changes, reconnects, and dropped frames.
+- HTML exports retain bounded exact claim-source excerpts, utterance IDs, and the last 40 sanitized recovery events so ASR, extraction, and capture failures can be audited without exporting the full transcript.
+- Deepgram connections use protocol keep-alives, an initial PCM silence frame, bounded post-seek audio buffering, automatic socket recovery, and a live-audio watchdog that rebuilds a stalled tab capture.
+
+### Changed
+
+- Evidence retrieval ranks relevant primary and contemporaneous sources ahead of later secondary summaries.
+- Extraction rejects unresolved direct address, low-value autobiographical assurances, and overlong compound statements, while verdict explanations are capped at 240 characters and a 480-token output budget.
+- Claims returned in one extraction are restored to their transcript order before delivery.
+- Privacy notice `2026-07-16-v3` discloses the bounded transcript provenance and sanitized recovery events included only in user-requested local HTML exports; existing users must reconfirm the updated notice.
+
+### Fixed
+
+- Seeking forward or backward can no longer merge old and new utterances, assign a pre-seek result to the destination timestamp, or leave the session silently active without transcript updates.
+- Closing the live panel preempts capture refresh, reconciles a lost stop response with worker status, and no longer traps the user behind an inconclusive cleanup warning.
+- Transient Deepgram network errors reconnect without destroying a healthy media graph, and reader-facing explanations cannot expose internal evidence IDs.
+
+## [2.0.4] - 2026-07-16
 
 ### Added
 

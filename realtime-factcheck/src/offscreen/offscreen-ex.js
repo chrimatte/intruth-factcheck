@@ -4,6 +4,12 @@
 const DEEPGRAM_ENDPOINT = 'wss://api.deepgram.com/v1/listen';
 const HANDSHAKE_TIMEOUT_MS = 10000;
 const CLOSE_STREAM_TIMEOUT_MS = 2500;
+const DEEPGRAM_KEEPALIVE_MS = 4000;
+const AUDIO_HEALTH_CHECK_MS = 5000;
+const AUDIO_STALL_TIMEOUT_MS = 15000;
+const SEEK_RECOVERY_DEBOUNCE_MS = 350;
+const SOCKET_RECONNECT_DELAYS_MS = [0, 500, 1500];
+const MAX_RECOVERY_AUDIO_BYTES = 1024 * 1024;
 const BUFFER_HIGH_WATER_BYTES = 1024 * 1024;
 const BUFFER_LOW_WATER_BYTES = 256 * 1024;
 const BACKPRESSURE_NOTICE_MS = 5000;
@@ -74,6 +80,19 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse(getCaptureStatus());
   }
 
+  if (message.type === 'MEDIA_TIMELINE_EVENT') {
+    // Content scripts broadcast extension messages too. Let the service worker
+    // authenticate the active tab and forward the accepted event back here.
+    if (_sender?.tab) return undefined;
+    handleMediaTimelineEvent(message)
+      .then(result => sendResponse(result))
+      .catch(error => {
+        const serialized = serializeError(error, 'MEDIA_TIMELINE_FAILED');
+        sendResponse({ ok: false, error: serialized, code: serialized.code });
+      });
+    return true;
+  }
+
   return undefined;
 });
 
@@ -82,6 +101,11 @@ function normalizeSessionId(value, createFallback = true) {
   if (!createFallback) return null;
   if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
   return `capture-${Date.now()}-${++captureSequence}`;
+}
+
+function normalizeTimelineEpoch(value) {
+  const epoch = Number(value);
+  return Number.isSafeInteger(epoch) && epoch >= 0 ? epoch : 0;
 }
 
 function serializeError(error, fallbackCode = 'CAPTURE_FAILED') {
@@ -135,6 +159,9 @@ function emitPipelineStatus(context, status, details = {}) {
 
 function getCaptureStatus() {
   const context = currentCapture;
+  const tracks = context?.mediaStream?.getAudioTracks?.()
+    || context?.mediaStream?.getTracks?.()
+    || [];
   return {
     ok: true,
     active: Boolean(context && (context.state === 'starting' || context.state === 'listening')),
@@ -142,10 +169,20 @@ function getCaptureStatus() {
     sessionId: context?.sessionId || null,
     sampleRate: context?.audioContext?.sampleRate || null,
     droppedFrames: context?.droppedFrames || 0,
+    sentFrames: context?.sentFrames || 0,
+    lastAudioFrameAt: context?.lastAudioFrameAt || null,
+    lastKeepAliveAt: context?.lastKeepAliveAt || null,
+    audioContextState: context?.audioContext?.state || null,
+    socketState: context?.socket?.readyState ?? null,
+    trackReadyState: tracks[0]?.readyState || null,
+    trackMuted: tracks.some(track => track.muted === true),
+    mediaPaused: context?.mediaPaused === true,
+    mediaSeeking: context?.mediaSeeking === true,
+    timelineEpoch: context?.timelineEpoch || 0,
   };
 }
 
-function createCaptureContext(sessionId, language, deepgramKey, revision) {
+function createCaptureContext(sessionId, language, deepgramKey, revision, timelineEpoch = 0) {
   return {
     id: ++captureSequence,
     revision,
@@ -161,12 +198,30 @@ function createCaptureContext(sessionId, language, deepgramKey, revision) {
     handshakeReject: null,
     handshakeTimer: null,
     expectedSocketClose: false,
+    socketRecoveryPromise: null,
+    activeRecoveryEpoch: null,
+    pendingSocketRecovery: null,
+    fullRefreshRequested: false,
+    keepAliveTimer: null,
+    audioHealthTimer: null,
+    seekRecoveryTimer: null,
+    audioResumePromise: null,
+    audioStateHandler: null,
     cleanupPromise: null,
-    trackEndHandlers: [],
+    trackEventHandlers: [],
     droppedFrames: 0,
     sentFrames: 0,
+    lastAudioFrameAt: null,
+    lastKeepAliveAt: null,
+    trackMutedAt: null,
+    mediaPaused: false,
     backpressured: false,
     lastBackpressureNotice: 0,
+    mediaSeeking: false,
+    timelineEpoch: normalizeTimelineEpoch(timelineEpoch),
+    ignoreProviderResults: false,
+    pendingAudioFrames: [],
+    pendingAudioBytes: 0,
     utterance: createEmptyUtterance(),
   };
 }
@@ -201,6 +256,7 @@ async function startCapture(message) {
 
   const language = ALLOWED_LANGUAGES.has(message.language) ? message.language : 'multi';
   const sessionId = normalizeSessionId(message.sessionId);
+  const requestedTimelineEpoch = normalizeTimelineEpoch(message.timelineEpoch);
   // Claim the lifecycle before the first await. Otherwise STOP_CAPTURE can
   // report success while a pending storage read later resumes and starts audio.
   const revision = ++lifecycleRevision;
@@ -256,7 +312,14 @@ async function startCapture(message) {
       throw new CaptureError('START_CANCELLED', 'Capture start was superseded or stopped.', false);
     }
 
-    context = createCaptureContext(sessionId, language, deepgramKey, revision);
+    const credentialTimelineEpoch = normalizeTimelineEpoch(credentialResponse.timelineEpoch);
+    context = createCaptureContext(
+      sessionId,
+      language,
+      deepgramKey,
+      revision,
+      Math.max(requestedTimelineEpoch, credentialTimelineEpoch)
+    );
     currentCapture = context;
 
     await prepareAudioCapture(context, streamId);
@@ -267,6 +330,8 @@ async function startCapture(message) {
 
     startAudioProcessor(context);
     context.state = 'listening';
+    startDeepgramKeepAlive(context);
+    startAudioHealthWatchdog(context);
     emitPipelineStatus(context, 'listening', {
       sampleRate: context.audioContext.sampleRate,
       language: context.language,
@@ -277,6 +342,7 @@ async function startCapture(message) {
       sessionId: context.sessionId,
       state: context.state,
       sampleRate: context.audioContext.sampleRate,
+      timelineEpoch: context.timelineEpoch,
     };
   } catch (error) {
     if (context) {
@@ -317,12 +383,22 @@ async function prepareAudioCapture(context, streamId) {
 
   for (const track of stream.getTracks()) {
     const onEnded = () => handleTrackEnded(context);
-    context.trackEndHandlers.push([track, onEnded]);
+    const onMute = () => handleTrackMuted(context);
+    const onUnmute = () => handleTrackUnmuted(context);
+    context.trackEventHandlers.push(
+      [track, 'ended', onEnded],
+      [track, 'mute', onMute],
+      [track, 'unmute', onUnmute]
+    );
     track.addEventListener('ended', onEnded, { once: true });
+    track.addEventListener('mute', onMute);
+    track.addEventListener('unmute', onUnmute);
   }
 
   try {
     context.audioContext = new AudioContext({ latencyHint: 'interactive' });
+    context.audioStateHandler = () => handleAudioContextStateChange(context);
+    context.audioContext.addEventListener?.('statechange', context.audioStateHandler);
     if (context.audioContext.state === 'suspended') await context.audioContext.resume();
     assertCurrent(context);
 
@@ -396,25 +472,44 @@ function openDeepgramSocket(context) {
         'Deepgram did not accept the connection in time.',
         true
       ));
-      context.expectedSocketClose = true;
+      if (context.socket === socket) context.expectedSocketClose = true;
       try { socket.close(4000, 'Handshake timeout'); } catch (_error) {}
     }, HANDSHAKE_TIMEOUT_MS);
 
     socket.addEventListener('open', () => {
-      if (!isCurrent(context)) {
+      if (!isCurrent(context) || context.socket !== socket) {
         failHandshake(new CaptureError('START_CANCELLED', 'Capture start was superseded.', false));
         try { socket.close(1000, 'Stale capture'); } catch (_error) {}
         return;
       }
       if (settled) return;
+      try {
+        // Deepgram NET-0001 requires at least one binary audio frame after each
+        // connection opens. A short valid PCM-silence frame covers a paused
+        // player or suspended AudioContext until live frames resume.
+        const sampleCount = Math.max(160, Math.round(context.audioContext.sampleRate / 50));
+        socket.send(new Int16Array(sampleCount).buffer);
+        context.lastAudioFrameAt = Date.now();
+      } catch (error) {
+        failHandshake(new CaptureError(
+          'DEEPGRAM_INITIAL_AUDIO_FAILED',
+          error instanceof Error ? error.message : 'Unable to initialize the audio stream.',
+          true
+        ));
+        try { socket.close(1011, 'Initial audio failed'); } catch (_error) {}
+        return;
+      }
       settled = true;
       clearHandshake();
       resolve();
     });
 
-    socket.addEventListener('message', event => handleDeepgramMessage(context, event));
+    socket.addEventListener('message', event => {
+      if (context.socket === socket) handleDeepgramMessage(context, event);
+    });
 
     socket.addEventListener('error', () => {
+      if (context.socket !== socket) return;
       const error = new CaptureError(
         settled ? 'DEEPGRAM_SOCKET_ERROR' : 'DEEPGRAM_HANDSHAKE_FAILED',
         settled
@@ -427,8 +522,9 @@ function openDeepgramSocket(context) {
     });
 
     socket.addEventListener('close', event => {
+      if (context.socket !== socket) return;
       if (!settled) {
-        const authFailure = event.code === 1008 || event.code === 4001 || event.code === 4003;
+        const authFailure = isDeepgramAuthFailure(event);
         failHandshake(new CaptureError(
           authFailure ? 'DEEPGRAM_AUTH_FAILED' : 'DEEPGRAM_HANDSHAKE_CLOSED',
           authFailure
@@ -439,9 +535,240 @@ function openDeepgramSocket(context) {
         ));
         return;
       }
-      handleSocketClosed(context, event);
+      handleSocketClosed(context, event, socket);
     });
   });
+}
+
+function isDeepgramAuthFailure(event) {
+  const reason = String(event?.reason || '').toUpperCase();
+  return event?.code === 4001
+    || event?.code === 4003
+    || /(?:INVALID[_ ]?AUTH|AUTHENTICATION|INSUFFICIENT[_ ]?PERMISSIONS|FORBIDDEN)/u.test(reason);
+}
+
+function closeSocketForReplacement(context, reason) {
+  const socket = context.socket;
+  context.socket = null;
+  context.expectedSocketClose = true;
+  if (context.handshakeTimer) clearTimeout(context.handshakeTimer);
+  context.handshakeTimer = null;
+  context.handshakeReject = null;
+  if (socket && socket.readyState !== WebSocket.CLOSED) {
+    try { socket.close(1000, reason || 'Reconnecting'); } catch (_error) {}
+  }
+  context.expectedSocketClose = false;
+}
+
+function waitForDelay(delayMs) {
+  if (!delayMs) return Promise.resolve();
+  return new Promise(resolve => setTimeout(resolve, delayMs));
+}
+
+function requestNewTabStream(context, reason, error = null) {
+  if (!isCurrent(context) || context.state === 'stopping' || context.fullRefreshRequested) return;
+  context.fullRefreshRequested = true;
+  if (error) emitPipelineError(context, error);
+  const sessionId = context.sessionId;
+  const revision = context.revision;
+  cleanupContext(context, { reason, sendCloseStream: false })
+    .then(() => {
+      if (lifecycleRevision !== revision || currentCapture) return;
+      sendRuntimeMessage({
+        type: 'REQUEST_NEW_STREAM',
+        sessionId,
+        reason,
+      });
+    })
+    .catch(() => {});
+}
+
+function recoverDeepgramSocket(context, reason = 'socket_recovery') {
+  if (!isCurrent(context) || context.state === 'stopping') return Promise.resolve(false);
+  if (context.socketRecoveryPromise) {
+    if (reason === 'media_seek' || context.timelineEpoch !== context.activeRecoveryEpoch) {
+      context.pendingSocketRecovery = {
+        epoch: context.timelineEpoch,
+        reason,
+      };
+    }
+    return context.socketRecoveryPromise.then(result => {
+      const pending = context.pendingSocketRecovery;
+      if (
+        !pending
+        || !isCurrent(context)
+        || context.mediaSeeking
+        || pending.epoch !== context.timelineEpoch
+      ) return result;
+      context.pendingSocketRecovery = null;
+      return recoverDeepgramSocket(context, pending.reason);
+    });
+  }
+  const revision = context.revision;
+  const recoveryEpoch = context.timelineEpoch;
+  context.activeRecoveryEpoch = recoveryEpoch;
+
+  context.socketRecoveryPromise = (async () => {
+    context.ignoreProviderResults = true;
+    context.utterance = createEmptyUtterance();
+    closeSocketForReplacement(context, reason);
+
+    let lastError = null;
+    for (const delayMs of SOCKET_RECONNECT_DELAYS_MS) {
+      await waitForDelay(delayMs);
+      if (!isCurrent(context) || lifecycleRevision !== revision || context.state === 'stopping') {
+        return false;
+      }
+      try {
+        await openDeepgramSocket(context);
+        if (!isCurrent(context) || lifecycleRevision !== revision) return false;
+        // A seek may have started while this handshake was in flight. Keep the
+        // new socket quarantined; the seeked event will request one final clean
+        // boundary for the latest epoch.
+        const matchesTimeline = !context.mediaSeeking && context.timelineEpoch === recoveryEpoch;
+        context.ignoreProviderResults = !matchesTimeline;
+        context.fullRefreshRequested = false;
+        if (matchesTimeline) {
+          flushBufferedAudio(context, context.socket);
+          emitPipelineStatus(context, 'transcription_reconnected', {
+            reason,
+            timelineEpoch: context.timelineEpoch,
+          });
+        }
+        return true;
+      } catch (error) {
+        lastError = error;
+        closeSocketForReplacement(context, 'Reconnect retry');
+      }
+    }
+
+    if (isCurrent(context) && lifecycleRevision === revision) {
+      requestNewTabStream(context, 'socket_recovery_failed', new CaptureError(
+        'DEEPGRAM_RECONNECT_FAILED',
+        lastError instanceof Error
+          ? lastError.message
+          : 'The transcription connection could not be restored.',
+        true
+      ));
+    }
+    return false;
+  })().finally(() => {
+    context.socketRecoveryPromise = null;
+    context.activeRecoveryEpoch = null;
+  });
+  return context.socketRecoveryPromise;
+}
+
+async function handleMediaTimelineEvent(message) {
+  const context = currentCapture;
+  const sessionId = normalizeSessionId(message?.sessionId, false);
+  if (!context || !sessionId || sessionId !== context.sessionId || !isCurrent(context)) {
+    return {
+      ok: false,
+      ignored: true,
+      code: 'CAPTURE_CONTEXT_UNAVAILABLE',
+      error: 'The active audio capture context is not ready for a timeline event.',
+      sessionId,
+      activeSessionId: context?.sessionId || null,
+    };
+  }
+
+  const phase = message?.phase === 'seeking' || message?.phase === 'seeked'
+    || message?.phase === 'paused' || message?.phase === 'playing'
+    ? message.phase
+    : '';
+  if (!phase) {
+    throw new CaptureError(
+      'MEDIA_TIMELINE_INVALID',
+      'The media timeline event was not recognized.',
+      false
+    );
+  }
+
+  const incomingEpoch = Number.isSafeInteger(message?.epoch) && message.epoch >= 0
+    ? message.epoch
+    : context.timelineEpoch + (phase === 'seeking' ? 1 : 0);
+  if (incomingEpoch < context.timelineEpoch) {
+    return {
+      ok: true,
+      ignored: true,
+      sessionId,
+      timelineEpoch: context.timelineEpoch,
+    };
+  }
+  context.timelineEpoch = incomingEpoch;
+
+  if (phase === 'paused' || phase === 'playing') {
+    context.mediaPaused = phase === 'paused';
+    if (!context.mediaPaused) {
+      // Give the Web Audio graph one full watchdog window to resume producing
+      // PCM before escalating to a fresh tab stream.
+      context.lastAudioFrameAt = Date.now();
+      void resumeAudioContext(context);
+    }
+    emitPipelineStatus(context, phase === 'paused' ? 'media_paused' : 'media_playing', {
+      timelineEpoch: context.timelineEpoch,
+      currentTime: optionalNumber(message.currentTime),
+    });
+    return {
+      ok: true,
+      sessionId,
+      phase,
+      timelineEpoch: context.timelineEpoch,
+    };
+  }
+
+  if (context.seekRecoveryTimer !== null) {
+    clearTimeout(context.seekRecoveryTimer);
+    context.seekRecoveryTimer = null;
+  }
+
+  // A seek is a hard transcript boundary. Results already queued by the old
+  // Deepgram socket must never be attached to the destination timestamp.
+  context.ignoreProviderResults = true;
+  context.utterance = createEmptyUtterance();
+  context.pendingAudioFrames = [];
+  context.pendingAudioBytes = 0;
+  context.mediaPaused = message.paused === true;
+
+  if (phase === 'seeking') {
+    context.mediaSeeking = true;
+    emitPipelineStatus(context, 'timeline_seeking', {
+      timelineEpoch: context.timelineEpoch,
+      currentTime: optionalNumber(message.currentTime),
+    });
+    return {
+      ok: true,
+      sessionId,
+      phase,
+      timelineEpoch: context.timelineEpoch,
+    };
+  }
+
+  context.mediaSeeking = false;
+  void resumeAudioContext(context);
+  const recoveryEpoch = context.timelineEpoch;
+  context.seekRecoveryTimer = setTimeout(() => {
+    context.seekRecoveryTimer = null;
+    if (
+      !isCurrent(context)
+      || context.state === 'stopping'
+      || context.mediaSeeking
+      || context.timelineEpoch !== recoveryEpoch
+    ) return;
+    void recoverDeepgramSocket(context, 'media_seek');
+  }, SEEK_RECOVERY_DEBOUNCE_MS);
+
+  emitPipelineStatus(context, 'timeline_seeked', {
+    timelineEpoch: recoveryEpoch,
+    currentTime: optionalNumber(message.currentTime),
+  });
+  return {
+    ok: true,
+    sessionId,
+    phase,
+    timelineEpoch: recoveryEpoch,
+  };
 }
 
 function startAudioProcessor(context) {
@@ -450,7 +777,21 @@ function startAudioProcessor(context) {
 
   processor.onaudioprocess = event => {
     const socket = context.socket;
-    if (!isCurrent(context) || context.state === 'stopping' || socket?.readyState !== WebSocket.OPEN) return;
+    if (!isCurrent(context) || context.state === 'stopping' || context.mediaSeeking) return;
+
+    const float32 = event.inputBuffer.getChannelData(0);
+    const int16 = new Int16Array(float32.length);
+    for (let i = 0; i < float32.length; i++) {
+      const sample = Math.max(-1, Math.min(1, float32[i]));
+      int16[i] = sample < 0 ? sample * 32768 : sample * 32767;
+    }
+    const audioFrame = int16.buffer;
+    context.lastAudioFrameAt = Date.now();
+
+    if (context.ignoreProviderResults || socket?.readyState !== WebSocket.OPEN) {
+      bufferAudioFrame(context, audioFrame);
+      return;
+    }
 
     if (context.backpressured) {
       if (socket.bufferedAmount > BUFFER_LOW_WATER_BYTES) {
@@ -470,15 +811,8 @@ function startAudioProcessor(context) {
       return;
     }
 
-    const float32 = event.inputBuffer.getChannelData(0);
-    const int16 = new Int16Array(float32.length);
-    for (let i = 0; i < float32.length; i++) {
-      const sample = Math.max(-1, Math.min(1, float32[i]));
-      int16[i] = sample < 0 ? sample * 32768 : sample * 32767;
-    }
-
     try {
-      socket.send(int16.buffer);
+      socket.send(audioFrame);
       context.sentFrames++;
     } catch (error) {
       emitPipelineError(context, new CaptureError(
@@ -492,6 +826,145 @@ function startAudioProcessor(context) {
   context.source.connect(processor);
   // ScriptProcessor must be connected to run; its output buffer is silent.
   processor.connect(context.audioContext.destination);
+}
+
+function bufferAudioFrame(context, frame) {
+  if (!(frame instanceof ArrayBuffer) || frame.byteLength === 0) return;
+  if (context.pendingAudioBytes + frame.byteLength > MAX_RECOVERY_AUDIO_BYTES) {
+    context.droppedFrames++;
+    return;
+  }
+  context.pendingAudioFrames.push(frame);
+  context.pendingAudioBytes += frame.byteLength;
+}
+
+function flushBufferedAudio(context, socket) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return 0;
+  let sent = 0;
+  for (const frame of context.pendingAudioFrames) {
+    try {
+      socket.send(frame);
+      context.sentFrames++;
+      sent++;
+    } catch (error) {
+      emitPipelineError(context, new CaptureError(
+        'DEEPGRAM_BUFFER_FLUSH_FAILED',
+        error instanceof Error ? error.message : 'Unable to resume buffered transcription audio.',
+        true
+      ));
+      break;
+    }
+  }
+  context.pendingAudioFrames = [];
+  context.pendingAudioBytes = 0;
+  if (sent) context.lastAudioFrameAt = Date.now();
+  return sent;
+}
+
+function startDeepgramKeepAlive(context) {
+  if (context.keepAliveTimer !== null) clearInterval(context.keepAliveTimer);
+  context.keepAliveTimer = setInterval(() => {
+    if (!isCurrent(context) || context.state !== 'listening') return;
+    const socket = context.socket;
+    if (socket?.readyState !== WebSocket.OPEN) return;
+    const lastAudioAt = Number(context.lastAudioFrameAt) || 0;
+    if (lastAudioAt && Date.now() - lastAudioAt < DEEPGRAM_KEEPALIVE_MS) return;
+    try {
+      // Deepgram requires this control payload as a text WebSocket frame.
+      socket.send(JSON.stringify({ type: 'KeepAlive' }));
+      context.lastKeepAliveAt = Date.now();
+    } catch (error) {
+      emitPipelineError(context, new CaptureError(
+        'DEEPGRAM_KEEPALIVE_FAILED',
+        error instanceof Error ? error.message : 'Unable to keep the transcription connection alive.',
+        true
+      ));
+    }
+  }, DEEPGRAM_KEEPALIVE_MS);
+}
+
+function startAudioHealthWatchdog(context) {
+  if (context.audioHealthTimer !== null) clearInterval(context.audioHealthTimer);
+  context.audioHealthTimer = setInterval(() => {
+    if (
+      !isCurrent(context)
+      || context.state !== 'listening'
+      || context.mediaSeeking
+      || context.mediaPaused
+      || context.socketRecoveryPromise
+      || context.fullRefreshRequested
+    ) return;
+
+    if (context.audioContext?.state === 'suspended') void resumeAudioContext(context);
+    const lastAudioAt = Number(context.lastAudioFrameAt) || 0;
+    const audioStalled = !lastAudioAt || Date.now() - lastAudioAt >= AUDIO_STALL_TIMEOUT_MS;
+    const trackPersistentlyMuted = Boolean(
+      context.trackMutedAt && Date.now() - context.trackMutedAt >= AUDIO_STALL_TIMEOUT_MS
+    );
+    if (!audioStalled && !trackPersistentlyMuted && context.audioContext?.state !== 'closed') return;
+
+    requestNewTabStream(context, 'audio_capture_stalled', new CaptureError(
+      'AUDIO_CAPTURE_STALLED',
+      'Tab audio stopped producing data and is being reconnected.',
+      true
+    ));
+  }, AUDIO_HEALTH_CHECK_MS);
+}
+
+function resumeAudioContext(context) {
+  if (!isCurrent(context) || !context.audioContext || context.audioContext.state !== 'suspended') {
+    return Promise.resolve(false);
+  }
+  if (context.audioResumePromise) return context.audioResumePromise;
+  context.audioResumePromise = Promise.resolve()
+    .then(() => context.audioContext?.resume())
+    .then(() => {
+      if (isCurrent(context) && context.audioContext?.state === 'running') {
+        emitPipelineStatus(context, 'audio_resumed', {
+          timelineEpoch: context.timelineEpoch,
+        });
+        return true;
+      }
+      return false;
+    })
+    .catch(error => {
+      if (isCurrent(context)) {
+        emitPipelineError(context, new CaptureError(
+          'AUDIO_RESUME_FAILED',
+          error instanceof Error ? error.message : 'Unable to resume tab audio after the timeline changed.',
+          true
+        ));
+      }
+      return false;
+    })
+    .finally(() => {
+      context.audioResumePromise = null;
+    });
+  return context.audioResumePromise;
+}
+
+function handleAudioContextStateChange(context) {
+  if (!isCurrent(context) || context.state === 'stopping') return;
+  if (context.audioContext?.state === 'suspended') void resumeAudioContext(context);
+}
+
+function handleTrackMuted(context) {
+  if (!isCurrent(context) || context.state === 'stopping') return;
+  context.trackMutedAt = Date.now();
+  emitPipelineStatus(context, 'audio_interrupted', {
+    reason: context.mediaSeeking ? 'media_seek' : 'track_muted',
+    timelineEpoch: context.timelineEpoch,
+  });
+  void resumeAudioContext(context);
+}
+
+function handleTrackUnmuted(context) {
+  if (!isCurrent(context) || context.state === 'stopping') return;
+  context.trackMutedAt = null;
+  void resumeAudioContext(context);
+  emitPipelineStatus(context, 'audio_resumed', {
+    timelineEpoch: context.timelineEpoch,
+  });
 }
 
 function noteDroppedFrame(context, bufferedBytes) {
@@ -663,6 +1136,7 @@ function buildTranscriptPayload(context, text, options) {
   return {
     type: 'TRANSCRIPT_RESULT',
     sessionId: context.sessionId,
+    timelineEpoch: context.timelineEpoch || 0,
     text,
     isFinal: options.isFinal,
     interim: options.interim,
@@ -750,34 +1224,43 @@ function handleDeepgramMessage(context, event) {
     return;
   }
 
+  if (data.type === 'Error') {
+    if (context.state === 'stopping') return;
+    const providerCode = String(data.code || data.err_code || '')
+      .trim()
+      .slice(0, 120);
+    const normalizedProviderCode = providerCode.toUpperCase();
+    const retryable = normalizedProviderCode.startsWith('NET-');
+    const authFailure = /(?:AUTH|TOKEN|PERMISSION|FORBIDDEN)/u.test(normalizedProviderCode);
+    const error = new CaptureError(
+      retryable ? 'DEEPGRAM_TRANSIENT_ERROR' : 'DEEPGRAM_RESPONSE_ERROR',
+      String(data.description || data.message || 'Deepgram reported a transcription error.'),
+      retryable,
+      providerCode ? { providerCode } : undefined
+    );
+    emitPipelineError(context, error, undefined, !retryable);
+    if (retryable) {
+      void recoverDeepgramSocket(context, normalizedProviderCode.toLowerCase());
+    } else {
+      cleanupContext(context, {
+        reason: authFailure ? 'deepgram_auth_error' : 'deepgram_response_error',
+        sendCloseStream: false,
+      }).catch(() => {});
+    }
+    return;
+  }
+
+  if (context.ignoreProviderResults) return;
+
   if (data.type === 'UtteranceEnd') {
     const flushed = flushUtterance(context, 'utterance_end');
     sendRuntimeMessage({
       type: 'UTTERANCE_END',
       sessionId: context.sessionId,
+      timelineEpoch: context.timelineEpoch || 0,
       flushed,
       lastWordEnd: optionalNumber(data.last_word_end),
     });
-    return;
-  }
-
-  if (data.type === 'Error') {
-    if (context.state === 'stopping') return;
-    const providerCode = String(data.code || data.err_code || '').trim().slice(0, 120);
-    const error = new CaptureError(
-      'DEEPGRAM_RESPONSE_ERROR',
-      String(data.description || data.message || 'Deepgram reported a transcription error.'),
-      false,
-      providerCode ? { providerCode } : undefined
-    );
-    emitPipelineError(context, error, undefined, true);
-    // A provider Error frame is terminal for this socket. Stop audio and clear
-    // all resources so the rest of the extension cannot remain "listening".
-    // expectedSocketClose is set by cleanup, so this path never reconnects.
-    cleanupContext(context, {
-      reason: 'deepgram_response_error',
-      sendCloseStream: false,
-    }).catch(() => {});
     return;
   }
 
@@ -807,18 +1290,16 @@ function handleTrackEnded(context) {
   const error = new CaptureError(
     'TAB_AUDIO_ENDED',
     'The captured tab stopped providing audio.',
-    false
+    true
   );
-  emitPipelineError(context, error, undefined, true);
-  cleanupContext(context, { reason: 'track_ended', sendCloseStream: true }).catch(() => {});
+  requestNewTabStream(context, 'track_ended', error);
 }
 
-function handleSocketClosed(context, event) {
+function handleSocketClosed(context, event, socket) {
   if (context.expectedSocketClose || context.state === 'stopped') return;
-  if (currentCapture !== context) return;
+  if (currentCapture !== context || context.socket !== socket) return;
 
-  const wasListening = context.state === 'listening';
-  const authFailure = event.code === 1008 || event.code === 4001 || event.code === 4003;
+  const authFailure = isDeepgramAuthFailure(event);
   const error = new CaptureError(
     authFailure ? 'DEEPGRAM_AUTH_FAILED' : 'DEEPGRAM_DISCONNECTED',
     authFailure
@@ -828,20 +1309,12 @@ function handleSocketClosed(context, event) {
     { closeCode: event.code || 1006 }
   );
   emitPipelineError(context, error, undefined, authFailure);
-
-  const sessionId = context.sessionId;
-  const revision = context.revision;
-  cleanupContext(context, { reason: 'socket_closed', sendCloseStream: false })
-    .then(() => {
-      if (!authFailure && wasListening && lifecycleRevision === revision && !currentCapture) {
-        sendRuntimeMessage({
-          type: 'REQUEST_NEW_STREAM',
-          sessionId,
-          reason: 'deepgram_disconnected',
-        });
-      }
-    })
-    .catch(() => {});
+  if (authFailure) {
+    cleanupContext(context, { reason: 'deepgram_auth_failed', sendCloseStream: false })
+      .catch(() => {});
+    return;
+  }
+  void recoverDeepgramSocket(context, 'deepgram_disconnected');
 }
 
 async function stopCapture(requestedSessionId, reason = 'requested') {
@@ -900,7 +1373,15 @@ async function cleanupContext(context, options = {}) {
   const sendCloseStream = options.sendCloseStream !== false;
   context.cleanupPromise = (async () => {
     context.state = 'stopping';
+    context.ignoreProviderResults = true;
     disconnectAudioProcessor(context);
+
+    if (context.keepAliveTimer !== null) clearInterval(context.keepAliveTimer);
+    context.keepAliveTimer = null;
+    if (context.audioHealthTimer !== null) clearInterval(context.audioHealthTimer);
+    context.audioHealthTimer = null;
+    if (context.seekRecoveryTimer !== null) clearTimeout(context.seekRecoveryTimer);
+    context.seekRecoveryTimer = null;
 
     if (context.handshakeTimer) clearTimeout(context.handshakeTimer);
     context.handshakeTimer = null;
@@ -938,10 +1419,10 @@ async function cleanupContext(context, options = {}) {
     }
     context.socket = null;
 
-    for (const [track, handler] of context.trackEndHandlers) {
-      track.removeEventListener('ended', handler);
+    for (const [track, eventName, handler] of context.trackEventHandlers || []) {
+      track.removeEventListener(eventName, handler);
     }
-    context.trackEndHandlers = [];
+    context.trackEventHandlers = [];
 
     if (context.mediaStream) {
       context.mediaStream.getTracks().forEach(track => track.stop());
@@ -949,10 +1430,20 @@ async function cleanupContext(context, options = {}) {
     }
 
     if (context.audioContext) {
+      if (context.audioStateHandler) {
+        context.audioContext.removeEventListener?.('statechange', context.audioStateHandler);
+      }
+      context.audioStateHandler = null;
       try { await context.audioContext.close(); } catch (_error) {}
       context.audioContext = null;
     }
 
+    context.audioResumePromise = null;
+    context.socketRecoveryPromise = null;
+    context.activeRecoveryEpoch = null;
+    context.pendingSocketRecovery = null;
+    context.pendingAudioFrames = [];
+    context.pendingAudioBytes = 0;
     context.deepgramKey = '';
     context.utterance = createEmptyUtterance();
     context.state = 'stopped';

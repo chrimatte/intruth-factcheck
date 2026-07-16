@@ -2,6 +2,64 @@
 
 InTruth separates browser privileges and provider responsibilities across four Manifest V3 contexts.
 
+## End-to-end workflow and tools
+
+Solid arrows carry normal data or analysis. Dashed arrows are lifecycle controls for seek, recovery, and stop.
+
+```mermaid
+flowchart TB
+  User([User])
+
+  subgraph Extension["Chrome extension · Manifest V3"]
+    Popup["Popup · Home / Settings"]
+    Local[("chrome.storage.local<br/>provider keys, consent, preferences")]
+    Worker["Service worker<br/>session authority + pipeline"]
+    Session[("chrome.storage.session<br/>recovery, metrics, terminal outbox")]
+    Offscreen["Offscreen document<br/>audio + Deepgram lifecycle"]
+    Overlay["Closed Shadow DOM overlay<br/>transcript, statements, verdicts"]
+    Export["Local self-contained HTML export<br/>sources + bounded provenance"]
+  end
+
+  subgraph Providers["External provider APIs"]
+    Deepgram["Deepgram Nova-3<br/>streaming transcription"]
+    Haiku["Claude Haiku 4.5<br/>classification + extraction"]
+    Serper["Serper / Google Search<br/>evidence retrieval"]
+    Verdict["Claude Haiku 4.5 or Sonnet 5<br/>grounded evaluation"]
+  end
+
+  User -->|"configure and start"| Popup
+  Popup <--> Local
+  Local -->|"keys read in trusted context"| Worker
+  Popup -->|"START_FACTCHECK · chrome.runtime"| Worker
+  Worker -->|"PING / render · chrome.tabs"| Overlay
+  Worker -->|"stream ID · chrome.tabCapture + chrome.offscreen"| Offscreen
+  Worker -->|"authenticated Deepgram key response"| Offscreen
+  Offscreen -->|"getUserMedia + Web Audio PCM over WSS"| Deepgram
+  Deepgram -->|"final words, timing, speakers, confidence"| Offscreen
+  Offscreen -->|"TRANSCRIPT_RESULT · session + epoch"| Worker
+  Worker -->|"bounded transcript window"| Haiku
+  Haiku --> Decision{"Statement type?"}
+  Decision -->|"salient opinion"| Overlay
+  Decision -->|"not check-worthy / unsafe"| Activity["Visible pipeline activity<br/>no evidence spend"]
+  Activity --> Overlay
+  Decision -->|"atomic factual claim"| Serper
+  Serper --> Rank["Relevance, primary-source,<br/>date and domain ranking"]
+  Rank --> Verdict
+  Verdict --> Guard["Schema, citation, quote,<br/>confidence and length validation"]
+  Guard --> Overlay
+  Worker <--> Session
+  Overlay -->|"local generation"| Export
+
+  Overlay -. "seek / media replacement" .-> Worker
+  Worker -. "persist new timeline epoch" .-> Session
+  Worker -. "reset boundary" .-> Offscreen
+  Offscreen -. "buffer PCM + reconnect" .-> Deepgram
+  Popup -. "stop" .-> Worker
+  Overlay -. "close / stop" .-> Worker
+  Worker -. "immediate STOP_CAPTURE" .-> Offscreen
+  Worker -. "abort providers + clear recovery state" .-> Session
+```
+
 ```mermaid
 sequenceDiagram
   actor User
@@ -19,7 +77,7 @@ sequenceDiagram
   Worker-->>Offscreen: Deepgram key for matching active session
   Offscreen->>Providers: tab audio to Deepgram
   Providers-->>Offscreen: final transcript + timing/confidence
-  Offscreen-->>Worker: TRANSCRIPT_RESULT(sessionId)
+  Offscreen-->>Worker: TRANSCRIPT_RESULT(sessionId, timelineEpoch)
   Worker->>Providers: Haiku classifies factual claims and opinions
   alt factual claim
     Worker->>Providers: Serper retrieves evidence
@@ -28,9 +86,15 @@ sequenceDiagram
     Worker-->>Page: terminal OPINION (no evidence request)
   end
   Worker-->>Page: statement/update(sessionId, claimId)
-  User->>Popup: Stop
-  Popup->>Worker: STOP_FACTCHECK
-  Worker->>Offscreen: flush and close
+  User->>Page: Seek forward/backward
+  Page->>Worker: MEDIA_TIMELINE_EVENT(new epoch)
+  Worker->>Worker: discard old transcript and analysis windows
+  Worker->>Offscreen: reset utterance and reconnect transcription
+  Offscreen->>Offscreen: buffer post-seek PCM until socket is ready
+  User->>Page: Stop or close live panel
+  Page->>Worker: STOP_FACTCHECK
+  Worker->>Offscreen: immediate STOP_CAPTURE
+  Worker->>Worker: serialized durable cleanup
   Worker-->>Page: STOP_FACTCHECK(sessionId)
 ```
 
@@ -58,6 +122,9 @@ sequenceDiagram
 13. Haiku handles every high-volume extraction request; Sonnet is used only for evidence verification in the user-selected Balanced profile.
 14. Provider-reported token usage is accumulated per stage. Reaching the configured Anthropic cost estimate pauses new AI/search work without hiding or stopping the live transcript.
 15. Provider keys never enter content-tab messages or persisted session state. The offscreen document receives only its Deepgram credential in a direct response bound to the active session.
+16. Every post-seek transcript, analysis batch, claim, and verdict carries the current timeline epoch; asynchronous output from an older epoch is discarded before it can create a new card.
+17. Deepgram KeepAlive messages preserve an intentionally silent connection but do not count as audio health. A separate no-PCM/persistent-mute watchdog rebuilds a stalled tab capture when playback is active.
+18. Stop preempts any capture start or reconnect before it waits for the serialized session cleanup, and a lost stop response is reconciled against authoritative worker status.
 
 ## Adaptive analysis pipeline
 
@@ -71,10 +138,10 @@ The worker records provider-reported input, output, cache-write, and cache-read 
 
 Manifest V3 can stop and recreate the service worker at any time. A bounded active-session recovery record is therefore kept in memory-backed `chrome.storage.session`; it includes capture identity, pending claim provenance, and terminal results not yet delivered to the overlay. The worker persists a terminal outbox entry before sending it, retries delivery, replays undelivered entries after restart, and converts genuinely interrupted `CHECKING` work to an explicit error. Durable configuration stays in `chrome.storage.local`. Both storage areas are restricted to trusted extension contexts. Runtime global variables are caches, not the sole source of truth.
 
-Stop attempts cleanup even when cached state is incomplete. It first disables analysis and aborts in-flight provider requests, then asks the offscreen context to flush already-sent transcription audio for display only, closes the provider stream, stops media tracks, and releases the document. A new start creates a new session generation and invalidates late responses from prior work.
+Stop attempts cleanup even when cached state is incomplete. It first disables analysis and sends an immediate offscreen stop so a capture refresh cannot hold the UI open. Serialized cleanup then aborts provider work, closes the transcription stream, stops media tracks, releases the document, and clears persisted session state. A new start creates a new session generation and invalidates late responses from prior work.
 
 ## Evidence contract
 
-Retrieved evidence is assigned stable IDs before it is sent for evaluation. The model may cite only those IDs. Parsed output must use an allowed verdict, bounded confidence, an explanation of at most 360 characters, and no more than three valid evidence IDs. Quotes must occur exactly in the cited snippet, duplicate publisher domains are collapsed, and snippet-only categorical results cannot exceed `MEDIUM` confidence. Validated citations can remain attached to an `UNVERIFIABLE` result so the reviewed evidence is auditable. The overlay receives metadata only for sources actually cited by the accepted result.
+Retrieved evidence is ranked by claim overlap, primary-source authority, Serper position, and availability at the video's date before duplicate publisher domains are collapsed. It is then assigned stable IDs before evaluation. The model may cite only those IDs. Parsed output must use an allowed verdict, bounded confidence, an explanation of at most 240 characters, and no more than three valid evidence IDs. Quotes must occur exactly in the cited snippet, and snippet-only categorical results cannot exceed `MEDIUM` confidence. Validated citations can remain attached to an `UNVERIFIABLE` result so the reviewed evidence is auditable. The overlay receives metadata only for sources actually cited by the accepted result.
 
-This contract improves traceability but does not prove that a source entails the verdict. Future work should retrieve full documents, preserve exact evidence spans, rank source authority and freshness, and measure citation entailment on a maintained benchmark.
+This contract improves traceability but does not prove that a source entails the verdict. Future work should retrieve full documents, validate authority and publication dates from those documents, preserve exact full-document evidence spans, and measure citation entailment on a maintained benchmark.
