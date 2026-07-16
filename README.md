@@ -115,4 +115,3 @@ would love advice, any features you'd like, and any edge cases you've found!
 ## license
 view license tab
 
->>>>>>> origin/main
