@@ -19,12 +19,13 @@
   --rtfc-muted: #a8a29e;
   --rtfc-faint: #8f8983;
   --rtfc-link: #93c5fd;
-  --rtfc-true: #86efac;
-  --rtfc-subtrue: #5eead4;
-  --rtfc-false: #fca5a5;
-  --rtfc-misleading: #fcd34d;
-  --rtfc-unverifiable: #d6d3d1;
-  --rtfc-error: #fecaca;
+  --rtfc-true: #4ade80;
+  --rtfc-subtrue: #2dd4bf;
+  --rtfc-false: #f87171;
+  --rtfc-misleading: #fbbf24;
+  --rtfc-unverifiable: #a8a29e;
+  --rtfc-error: #fb7185;
+  --rtfc-gutter: 16px;
   --rtfc-panel-x: 0px;
   --rtfc-panel-y: 0px;
 
@@ -143,7 +144,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 11px 12px 11px 15px;
+  padding: 11px 12px 11px var(--rtfc-gutter);
   border-bottom: 1px solid var(--rtfc-line-soft);
   cursor: grab;
   touch-action: none;
@@ -168,7 +169,7 @@
 
 .rtfc-brand-lockup strong {
   color: var(--rtfc-text);
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 720;
   letter-spacing: -0.02em;
   line-height: 1.15;
@@ -231,7 +232,7 @@
   background: var(--rtfc-surface-raised);
   border: 1px solid var(--rtfc-line);
   border-radius: 8px;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 650;
 }
 
@@ -281,37 +282,50 @@
 /* Session and error states */
 
 .rtfc-pipeline-activity {
-  display: flex;
+  display: grid;
   flex: 0 0 auto;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 15px;
+  gap: 2px;
+  padding: 8px var(--rtfc-gutter) 9px;
   color: var(--rtfc-text-secondary);
   background: #1d1e1c;
   border-bottom: 1px solid var(--rtfc-line-soft);
 }
 
-.rtfc-pipeline-activity strong {
-  flex: 0 1 auto;
-  font-size: 11px;
+.rtfc-activity-topline {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rtfc-activity-topline strong {
+  min-width: 0;
+  font-size: 11.5px;
   font-weight: 680;
   line-height: 1.3;
 }
 
-.rtfc-pipeline-activity span {
-  flex: 1 1 auto;
-  color: var(--rtfc-muted);
+.rtfc-activity-mode {
+  flex: 0 0 auto;
+  color: var(--rtfc-faint);
   font-size: 10px;
+  font-weight: 620;
   line-height: 1.35;
-  text-align: right;
+}
+
+.rtfc-activity-metrics {
+  color: var(--rtfc-muted);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
 }
 
 .rtfc-session-notice {
   display: grid;
   flex: 0 0 auto;
   gap: 1px;
-  padding: 10px 15px;
+  padding: 10px var(--rtfc-gutter);
   color: var(--rtfc-text-secondary);
   background: #232220;
   border-bottom: 1px solid var(--rtfc-line-soft);
@@ -333,7 +347,7 @@
   flex: 0 0 auto;
   align-items: center;
   gap: 9px;
-  padding: 10px 11px 10px 15px;
+  padding: 10px 11px 10px var(--rtfc-gutter);
   color: var(--rtfc-error);
   background: #321c1c;
   border-bottom: 1px solid #713535;
@@ -395,26 +409,25 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 11px 14px 8px;
+  padding: 12px var(--rtfc-gutter) 10px;
 }
 
 .rtfc-section-header > div:first-child {
   display: grid;
-  gap: 1px;
+  gap: 2px;
 }
 
 .rtfc-section-kicker {
   color: var(--rtfc-faint);
-  font-size: 10.5px;
+  font-size: 10px;
   font-weight: 650;
-  letter-spacing: 0.055em;
+  letter-spacing: 0.045em;
   line-height: 1.2;
-  text-transform: uppercase;
 }
 
 .rtfc-section-header h2 {
   color: var(--rtfc-text);
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 700;
   letter-spacing: -0.018em;
   line-height: 1.25;
@@ -443,16 +456,16 @@
 /* Transcript */
 
 #rtfc-transcript-content {
-  padding-bottom: 10px;
+  padding-bottom: 11px;
 }
 
 #rtfc-transcript-feed {
   max-height: 132px;
   overflow-y: auto;
-  padding: 2px 14px 5px;
+  padding: 2px var(--rtfc-gutter) 5px;
   color: var(--rtfc-text-secondary);
-  font-size: 12.5px;
-  line-height: 1.68;
+  font-size: 13px;
+  line-height: 1.62;
   overflow-wrap: anywhere;
 }
 
@@ -461,24 +474,41 @@
 }
 
 #rtfc-interim {
-  min-height: 24px;
-  padding: 2px 14px 0;
+  min-height: 0;
+  padding: 2px var(--rtfc-gutter) 1px;
   color: var(--rtfc-muted);
-  font-size: 12px;
-  font-style: italic;
-  line-height: 1.55;
+  font-size: 13px;
+  font-style: normal;
+  line-height: 1.62;
   overflow-wrap: anywhere;
+}
+
+#rtfc-interim:empty {
+  display: none;
 }
 
 /* Claim queue */
 
-#rtfc-claim-feed {
+#rtfc-panel #rtfc-claim-feed {
   list-style: none;
-  padding: 0 14px 12px;
+  margin: 0;
+  padding: 1px var(--rtfc-gutter) 13px;
 }
 
 .rtfc-claims-empty {
-  padding: 3px 0 8px;
+  display: grid;
+  gap: 3px;
+  padding: 4px 0 9px;
+}
+
+.rtfc-claims-empty strong {
+  color: var(--rtfc-text-secondary);
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.rtfc-claims-empty span {
   color: var(--rtfc-muted);
   font-size: 12px;
   line-height: 1.5;
@@ -487,15 +517,15 @@
 .rtfc-claim-item {
   --rtfc-state-color: var(--rtfc-unverifiable);
   display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
   align-items: start;
-  gap: 8px;
-  padding: 10px 0;
-  border-top: 1px solid var(--rtfc-line-soft);
+  column-gap: 6px;
+  padding: 10px 0 9px;
+  border-bottom: 2px solid color-mix(in srgb, var(--rtfc-state-color) 58%, var(--rtfc-line-soft));
 }
 
 .rtfc-claim-item:first-child {
-  border-top: 0;
+  padding-top: 7px;
 }
 
 .rtfc-claim-item--checking { --rtfc-state-color: var(--rtfc-muted); }
@@ -507,9 +537,10 @@
 .rtfc-claim-item--error { --rtfc-state-color: var(--rtfc-error); }
 
 .rtfc-claim-number {
-  color: var(--rtfc-faint);
+  color: var(--rtfc-state-color);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-size: 10.5px;
+  font-weight: 700;
   font-variant-numeric: tabular-nums;
   line-height: 1.6;
 }
@@ -523,31 +554,38 @@
 }
 
 .rtfc-claim-state {
-  padding-top: 2px;
+  padding: 2px 5px;
   color: var(--rtfc-state-color);
-  font-size: 10.5px;
+  background: color-mix(in srgb, var(--rtfc-state-color) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--rtfc-state-color) 30%, transparent);
+  border-radius: 4px;
+  font-size: 10px;
   font-weight: 750;
-  letter-spacing: 0.045em;
-  line-height: 1.5;
+  letter-spacing: 0.025em;
+  line-height: 1.35;
   white-space: nowrap;
 }
 
 /* Verdict feed */
 
 .rtfc-verdicts-heading-row {
+  align-items: center;
+}
+
+.rtfc-verdicts-heading-row:has(#rtfc-speaker-editor:not([hidden])) {
   align-items: flex-start;
 }
 
 #rtfc-verdicts {
   display: grid;
   gap: 11px;
-  padding: 2px 14px 16px;
+  padding: 2px var(--rtfc-gutter) 17px;
 }
 
 .rtfc-empty-state {
   display: grid;
-  gap: 3px;
-  padding: 10px 0 13px;
+  gap: 4px;
+  padding: 11px 0 14px;
   border-top: 1px solid var(--rtfc-line-soft);
 }
 
@@ -569,8 +607,8 @@
   gap: 8px;
   padding: 13px 13px 14px;
   overflow: hidden;
-  background: var(--rtfc-surface);
-  border: 1px solid var(--rtfc-line-soft);
+  background: color-mix(in srgb, var(--rtfc-state-color) 6%, var(--rtfc-surface));
+  border: 1px solid color-mix(in srgb, var(--rtfc-state-color) 25%, var(--rtfc-line-soft));
   border-left: 3px solid var(--rtfc-state-color);
   border-radius: 12px;
   animation: rtfc-enter 220ms cubic-bezier(0.16, 1, 0.3, 1) both;
@@ -582,7 +620,7 @@
 .rtfc-verdict--false { --rtfc-state-color: var(--rtfc-false); }
 .rtfc-verdict--misleading { --rtfc-state-color: var(--rtfc-misleading); }
 .rtfc-verdict--unverifiable { --rtfc-state-color: var(--rtfc-unverifiable); }
-.rtfc-verdict--error { --rtfc-state-color: var(--rtfc-error); background: #251d1c; }
+.rtfc-verdict--error { --rtfc-state-color: var(--rtfc-error); }
 
 @keyframes rtfc-enter {
   from { opacity: 0; transform: translateY(5px); }
@@ -605,10 +643,14 @@
 }
 
 .rtfc-badge {
+  padding: 3px 6px;
   color: var(--rtfc-state-color);
+  background: color-mix(in srgb, var(--rtfc-state-color) 11%, transparent);
+  border: 1px solid color-mix(in srgb, var(--rtfc-state-color) 30%, transparent);
+  border-radius: 5px;
   font-size: 10.5px;
   font-weight: 800;
-  letter-spacing: 0.055em;
+  letter-spacing: 0.025em;
   line-height: 1.3;
 }
 
@@ -734,7 +776,7 @@
 .rtfc-speaker-banner {
   display: grid;
   gap: 5px;
-  margin: 10px 14px;
+  margin: 10px var(--rtfc-gutter);
   padding: 12px;
   background: #202528;
   border: 1px solid #3f515c;
@@ -958,17 +1000,8 @@ a.rtfc-source-title:hover {
     min-height: 56px;
   }
 
-  .rtfc-pipeline-activity {
-    display: grid;
-    gap: 2px;
-  }
-
-  .rtfc-pipeline-activity span {
-    text-align: left;
-  }
-
   .rtfc-claim-item {
-    grid-template-columns: 20px minmax(0, 1fr);
+    grid-template-columns: 12px minmax(0, 1fr);
   }
 
   .rtfc-claim-state {

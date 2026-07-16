@@ -50,34 +50,56 @@
     };
     const sessionId = 'preview-session';
     emit({ type: 'START_FACTCHECK', sessionId });
-    emit({
+    const fixtureState = new URLSearchParams(window.location.search).get('state') || 'populated';
+    if (fixtureState === 'single') {
+      emit({
+        type: 'PIPELINE_ACTIVITY', sessionId, status: 'verified',
+        metrics: {
+          analysisWindows: 1, claimsDetected: 1, claimsCompleted: 1,
+          anthropicRequests: 2, estimatedCostUsd: 0.0084,
+          analysisMode: 'efficient', sessionBudgetUsd: 0.5
+        }
+      });
+      emit({
+        type: 'NEW_VERDICT', sessionId,
+        results: [{
+          sessionId, claimId: 'claim-single-supported',
+          claim: 'The published table reports a 4.2 percent annual rate.',
+          status: 'COMPLETE', verdict: 'TRUE', pending: false, confidence: 'HIGH',
+          explanation: 'The cited statistical release directly supports this statement.',
+          citations: [{ evidenceId: 'E1', sourceId: 'S1', quote: 'The annual rate was 4.2 percent.' }],
+          sources: [{ id: 'S1', evidenceId: 'E1', url: 'https://statistics.example/report', title: 'December statistical release', domain: 'statistics.example', snippet: 'The annual rate was 4.2 percent.' }]
+        }]
+      });
+    } else if (fixtureState !== 'empty') {
+      emit({
       type: 'TRANSCRIPT_RESULT', sessionId, isFinal: true,
       text: 'The annual rate was 4.2 percent in December 2025.', speaker: 0
-    });
-    emit({
+      });
+      emit({
       type: 'PIPELINE_ACTIVITY', sessionId, status: 'verification',
       metrics: {
-        analysisWindows: 7, claimsDetected: 4, claimsCompleted: 3,
+        analysisWindows: 9, claimsDetected: 7, claimsCompleted: 6,
         anthropicRequests: 9, estimatedCostUsd: 0.0384,
         analysisMode: 'efficient', sessionBudgetUsd: 0.5
       }
-    });
-    emit({
+      });
+      emit({
       type: 'NEW_VERDICT', sessionId,
       results: [{
         sessionId, claimId: 'claim-checking', claim: 'The unemployment rate is currently below five percent.',
         status: 'CHECKING', verdict: 'CHECKING', pending: true, dominantSpeakerId: 0,
         explanation: 'Checking independent evidence…'
       }]
-    });
-    emit({
+      });
+      emit({
       type: 'NEW_VERDICT', sessionId,
       results: [{
         sessionId, claimId: 'claim-grounded', claim: 'The annual rate was 6.8 percent in December 2025.',
         status: 'CHECKING', verdict: 'CHECKING', pending: true, dominantSpeakerId: 1
       }]
-    });
-    emit({
+      });
+      emit({
       type: 'UPDATE_VERDICTS', sessionId,
       results: [{
         sessionId, claimId: 'claim-grounded', claim: 'The annual rate was 6.8 percent in December 2025.',
@@ -93,28 +115,42 @@
         ],
         lexical: { rates: { hedging: 2, certainty: 1 }, wordsPerSecond: 2.7 }
       }]
-    });
-    emit({
+      });
+      emit({
       type: 'NEW_VERDICT', sessionId,
       results: [{ sessionId, claimId: 'claim-unknown', claim: 'This program created exactly one million jobs.', status: 'CHECKING', verdict: 'CHECKING', pending: true }]
-    });
-    emit({
+      });
+      emit({
       type: 'UPDATE_VERDICTS', sessionId,
       results: [{ sessionId, claimId: 'claim-unknown', claim: 'This program created exactly one million jobs.', status: 'UNVERIFIABLE', verdict: 'UNVERIFIABLE', pending: false, confidence: 'LOW', explanation: 'The available excerpts do not identify a compatible program and date.' }]
-    });
-    emit({
+      });
+      emit({
       type: 'NEW_VERDICT', sessionId,
       results: [{ sessionId, claimId: 'claim-error', claim: 'A provider-error example claim.', status: 'CHECKING', verdict: 'CHECKING', pending: true }]
-    });
-    emit({
+      });
+      emit({
       type: 'UPDATE_VERDICTS', sessionId,
       results: [{ sessionId, claimId: 'claim-error', claim: 'A provider-error example claim.', status: 'ERROR', verdict: 'ERROR', pending: false, explanation: 'The evidence service did not respond in time.' }]
-    });
-    emit({ type: 'NEW_SPEAKER', sessionId, speakerId: 0, sample: 'We should look at the published annual table.' });
+      });
+      emit({
+      type: 'NEW_VERDICT', sessionId,
+      results: [{ sessionId, claimId: 'claim-supported', claim: 'The published table reports a 4.2 percent annual rate.', status: 'COMPLETE', verdict: 'TRUE', pending: false, confidence: 'HIGH', explanation: 'The cited statistical release directly supports this statement.' }]
+      });
+      emit({
+      type: 'NEW_VERDICT', sessionId,
+      results: [{ sessionId, claimId: 'claim-mostly-supported', claim: 'The annual rate stayed near four percent throughout the period.', status: 'COMPLETE', verdict: 'SUBSTANTIALLY TRUE', pending: false, confidence: 'MEDIUM', explanation: 'The available releases support the overall range, with a small exception in one month.' }]
+      });
+      emit({
+      type: 'NEW_VERDICT', sessionId,
+      results: [{ sessionId, claimId: 'claim-misleading', claim: 'The revised figure proves the policy had no effect.', status: 'COMPLETE', verdict: 'MISLEADING', pending: false, confidence: 'MEDIUM', explanation: 'The figure is accurate, but it does not establish the causal conclusion in the statement.' }]
+      });
+      emit({ type: 'NEW_SPEAKER', sessionId, speakerId: 0, sample: 'We should look at the published annual table.' });
+    }
 
     window.__intruthPreview = {
       emit,
       sessionId,
+      fixtureState,
       ping() {
         return emit({ type: 'PING', requestId: 'preview-ping', sessionId });
       },

@@ -2,7 +2,20 @@
 
 All notable changes are documented here. This project uses semantic versions for the checked-in extension.
 
-## [2.0.1] - Unreleased
+## [2.0.2] - Unreleased
+
+### Changed
+
+- The overlay uses one 16 px content gutter, clearer copy, readable live transcript typography, and structured empty states.
+- Claims and verdicts render newest first so the live panel follows the current point in the video.
+- User-facing verdict labels now describe evidence support instead of presenting model states as absolute truth.
+- Claim rows, status labels, and verdict cards use distinct green, teal, red, amber, gray, and rose treatments derived from the original visual system.
+
+### Fixed
+
+- Claim numbers and empty-state copy can no longer lose their left gutter to the generic list reset.
+
+## [2.0.1] - 2026-07-16
 
 ### Fixed
 

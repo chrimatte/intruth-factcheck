@@ -234,7 +234,29 @@ function stateClass(state) {
 }
 
 function stateLabel(state) {
-  return state === 'SUBSTANTIALLY TRUE' ? 'SUBSTANTIALLY TRUE' : state;
+  const labels = {
+    CHECKING: 'Checking sources',
+    TRUE: 'Supported',
+    'SUBSTANTIALLY TRUE': 'Mostly supported',
+    FALSE: 'Contradicted',
+    MISLEADING: 'Misleading',
+    UNVERIFIABLE: 'Not enough evidence',
+    ERROR: 'Check failed',
+  };
+  return labels[state] || 'Not enough evidence';
+}
+
+function queueStateLabel(state) {
+  const labels = {
+    CHECKING: 'Checking',
+    TRUE: 'Supported',
+    'SUBSTANTIALLY TRUE': 'Mostly supported',
+    FALSE: 'Contradicted',
+    MISLEADING: 'Misleading',
+    UNVERIFIABLE: 'Unverified',
+    ERROR: 'Failed',
+  };
+  return labels[state] || 'Unverified';
 }
 
 function isTerminalState(state) {
@@ -288,7 +310,7 @@ function buildSourcesHTML(result) {
   if (!sources.length) {
     if (normalizedResultState(result) === 'CHECKING') return '';
     return '<section class="rtfc-sources rtfc-sources--empty" aria-label="Evidence sources">' +
-      '<h4>Evidence sources</h4><p class="rtfc-source-empty">No cited source links were returned for this result.</p>' +
+      '<h4>Sources reviewed</h4><p class="rtfc-source-empty">No source links were available for this result.</p>' +
     '</section>';
   }
 
@@ -311,7 +333,7 @@ function buildSourcesHTML(result) {
   }).join('');
 
   return '<section class="rtfc-sources" aria-label="Evidence sources">' +
-    '<h4>Evidence sources</h4><ol>' + items + '</ol>' +
+    '<h4>Sources reviewed</h4><ol>' + items + '</ol>' +
   '</section>';
 }
 
@@ -425,12 +447,12 @@ function showSpeakerBanner(speakerId, sample, attempt = 0, expectedSessionId = a
   banner.setAttribute('role', 'group');
   banner.setAttribute('aria-label', 'Identify a newly detected speaker');
   banner.innerHTML =
-    '<p class="rtfc-speaker-banner-title">New speaker detected</p>' +
-    '<p class="rtfc-speaker-banner-text">Choose the person speaking in this sample.</p>' +
+    '<p class="rtfc-speaker-banner-title">Who is speaking?</p>' +
+    '<p class="rtfc-speaker-banner-text">Select the speaker for this excerpt.</p>' +
     '<blockquote dir="auto">' + escapeHtml(sample) + '</blockquote>' +
     '<div class="rtfc-speaker-banner-buttons">' +
       speakers.map((name) => '<button type="button" class="rtfc-speaker-banner-btn" data-action="confirm-speaker" data-name="' + escapeHtml(name) + '" data-id="' + escapeHtml(id) + '">' + escapeHtml(name) + '</button>').join('') +
-      '<button type="button" class="rtfc-speaker-banner-btn rtfc-speaker-banner-btn--skip" data-action="confirm-speaker" data-id="' + escapeHtml(id) + '">Skip</button>' +
+      '<button type="button" class="rtfc-speaker-banner-btn rtfc-speaker-banner-btn--skip" data-action="confirm-speaker" data-id="' + escapeHtml(id) + '">Not sure</button>' +
     '</div>';
 
   const verdictsSection = panel?.querySelector('#rtfc-verdicts-section');
@@ -486,7 +508,7 @@ function buildClaimCard(record) {
   const showMarkers = state !== 'CHECKING' && (lexicalRows || result.speaker_confidence);
 
   const explanation = state === 'CHECKING'
-    ? 'Comparing the claim with available evidence.'
+    ? 'Comparing this claim with available sources…'
     : state === 'ERROR'
       ? (result.explanation || result.error || 'Verification could not be completed.')
       : state === 'UNVERIFIABLE'
@@ -519,10 +541,10 @@ function buildClaimCard(record) {
     (showMarkers
       ? '<div class="rtfc-markers">' +
           '<button type="button" class="rtfc-marker-toggle" aria-expanded="false" aria-controls="' + markersId + '">' +
-            '<span>Experimental delivery markers</span><span class="rtfc-chevron" aria-hidden="true"></span>' +
+            '<span>Speech-pattern analysis · Experimental</span><span class="rtfc-chevron" aria-hidden="true"></span>' +
           '</button>' +
           '<div class="rtfc-marker-panel" id="' + markersId + '" hidden>' +
-            '<p class="rtfc-marker-disclaimer">These language patterns do not measure truthfulness or deception.</p>' +
+            '<p class="rtfc-marker-disclaimer">These patterns describe delivery only. They do not indicate truthfulness or deception.</p>' +
             (result.speaker_confidence ? '<p class="rtfc-marker-model-label">Model label: ' + escapeHtml(String(result.speaker_confidence).toLowerCase()) + '</p>' : '') +
             (lexicalRows ? '<ul>' + lexicalRows + '</ul>' : '') +
           '</div>' +
@@ -538,7 +560,7 @@ function updateClaimBullet(record) {
   record.bullet.dataset.state = record.state;
   record.bullet.className = `rtfc-claim-item rtfc-claim-item--${stateClass(record.state)}`;
   const status = record.bullet.querySelector('.rtfc-claim-state');
-  if (status) status.textContent = stateLabel(record.state);
+  if (status) status.textContent = queueStateLabel(record.state);
 }
 
 function renderClaimRecord(record) {
@@ -549,7 +571,7 @@ function renderClaimRecord(record) {
   const expanded = record.card?.querySelector('.rtfc-marker-toggle')?.getAttribute('aria-expanded') === 'true';
   const newCard = buildClaimCard(record);
   if (record.card?.isConnected) record.card.replaceWith(newCard);
-  else verdictListEl.appendChild(newCard);
+  else verdictListEl.prepend(newCard);
   record.card = newCard;
 
   if (expanded) {
@@ -574,8 +596,8 @@ function createClaimBullet(record) {
   item.innerHTML =
     '<span class="rtfc-claim-number" aria-hidden="true">' + record.sequence + '</span>' +
     '<span class="rtfc-claim-copy" dir="auto">' + escapeHtml(record.result.claim) + '</span>' +
-    '<span class="rtfc-claim-state">' + escapeHtml(stateLabel(record.state)) + '</span>';
-  claimFeedEl.appendChild(item);
+    '<span class="rtfc-claim-state">' + escapeHtml(queueStateLabel(record.state)) + '</span>';
+  claimFeedEl.prepend(item);
   return item;
 }
 
@@ -695,8 +717,8 @@ function updateExportButton() {
   const available = typeof hasExportableSession === 'function' && hasExportableSession();
   exportButtonEl.disabled = !available;
   exportButtonEl.title = available
-    ? 'Export completed claims as an HTML report'
-    : 'A completed claim is required before export';
+    ? 'Download completed claims as an HTML report'
+    : 'A completed claim is required before a report can be exported';
 }
 
 function showError(message, options = {}) {
@@ -726,36 +748,58 @@ function formatEstimatedCost(value) {
   return `$${cost.toFixed(2)} est.`;
 }
 
+function setClaimEmptyState(title, detail) {
+  const empty = claimFeedEl?.querySelector('.rtfc-claims-empty');
+  if (!empty) return;
+  empty.innerHTML =
+    '<strong>' + escapeHtml(title) + '</strong>' +
+    '<span>' + escapeHtml(detail) + '</span>';
+}
+
 function updatePipelineActivity(message) {
   if (!activityEl || !message?.metrics || typeof message.metrics !== 'object') return;
   const metrics = message.metrics;
   latestPipelineMetrics = metrics;
   const status = String(message.status || '').toLowerCase();
   const labels = {
-    listening: 'Listening',
+    listening: 'Listening for claims',
     analyzing: 'Analyzing transcript',
-    extraction: 'Transcript analyzed',
-    no_claims: 'No claim in the latest window',
-    claims_rejected: 'Candidate rejected safely',
-    verification: 'Checking evidence',
-    verified: 'Verdict updated',
-    budget_reached: 'AI budget reached · transcript only',
+    extraction: 'Passage analyzed',
+    no_claims: 'No claim detected',
+    claims_rejected: 'Potential claim skipped',
+    verification: 'Checking sources',
+    verified: 'Verdict ready',
+    budget_reached: 'Budget reached · transcription continues',
   };
   const windows = Number(metrics.analysisWindows) || 0;
   const claims = Number(metrics.claimsDetected) || 0;
   const mode = metrics.analysisMode === 'balanced' ? 'Balanced' : 'Efficient';
   activityEl.innerHTML =
-    '<strong>' + escapeHtml(labels[status] || 'Pipeline active') + '</strong>' +
-    '<span>' + escapeHtml(`${windows} window${windows === 1 ? '' : 's'} · ${claims} claim${claims === 1 ? '' : 's'} · ${formatEstimatedCost(metrics.estimatedCostUsd)} · ${mode}`) + '</span>';
+    '<div class="rtfc-activity-topline">' +
+      '<strong>' + escapeHtml(labels[status] || 'Analysis active') + '</strong>' +
+      '<span class="rtfc-activity-mode">' + escapeHtml(`${mode} mode`) + '</span>' +
+    '</div>' +
+    '<span class="rtfc-activity-metrics">' +
+      escapeHtml(`${windows} passage${windows === 1 ? '' : 's'} · ${claims} claim${claims === 1 ? '' : 's'} · ${formatEstimatedCost(metrics.estimatedCostUsd)}`) +
+    '</span>';
 
   const emptyClaims = claimFeedEl?.querySelector('.rtfc-claims-empty');
   if (emptyClaims) {
     if (status === 'budget_reached') {
-      emptyClaims.textContent = 'The Anthropic session budget was reached. Transcript capture continues without new claim analysis.';
+      setClaimEmptyState(
+        'Analysis paused',
+        'The session budget was reached. Transcription continues without new claim checks.'
+      );
     } else if (status === 'claims_rejected') {
-      emptyClaims.textContent = 'A candidate was found but rejected because it could not be tied safely to an exact transcript quote.';
+      setClaimEmptyState(
+        'Potential claim skipped',
+        'It could not be matched reliably to the transcript.'
+      );
     } else if (windows > 0) {
-      emptyClaims.textContent = `Analyzed ${windows} transcript window${windows === 1 ? '' : 's'}; no check-worthy claim detected yet.`;
+      setClaimEmptyState(
+        'No claim detected',
+        `${windows} transcript passage${windows === 1 ? '' : 's'} analyzed so far.`
+      );
     }
   }
 }
@@ -764,25 +808,26 @@ function panelMarkup() {
   return '<header id="rtfc-header">' +
       '<div class="rtfc-brand-lockup">' +
         '<span class="rtfc-live-dot" aria-hidden="true"></span>' +
-        '<div><strong>InTruth</strong><span id="rtfc-session-status" role="status" aria-live="polite">Live session</span></div>' +
+        '<div><strong>InTruth</strong><span id="rtfc-session-status" role="status" aria-live="polite">Analysis active</span></div>' +
       '</div>' +
       '<div class="rtfc-header-actions">' +
-        '<button type="button" id="rtfc-export" class="rtfc-text-button" disabled>Export HTML</button>' +
+        '<button type="button" id="rtfc-export" class="rtfc-text-button" disabled>Export report</button>' +
         '<button type="button" id="rtfc-close" class="rtfc-icon-button" aria-label="Close InTruth and stop the session">' +
           '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>' +
         '</button>' +
       '</div>' +
     '</header>' +
     '<div id="rtfc-pipeline-activity" class="rtfc-pipeline-activity" role="status" aria-live="polite">' +
-      '<strong>Listening</strong><span>0 windows · 0 claims · $0.00 est. · Efficient</span>' +
+      '<div class="rtfc-activity-topline"><strong>Listening for claims</strong><span class="rtfc-activity-mode">Efficient mode</span></div>' +
+      '<span class="rtfc-activity-metrics">0 passages · 0 claims · $0.00 est.</span>' +
     '</div>' +
     '<div id="rtfc-session-notice" class="rtfc-session-notice" role="status" hidden>' +
-      '<strong>Session ended</strong><span>Results remain available for HTML export.</span>' +
+      '<strong>Analysis complete</strong><span>Results remain available for export.</span>' +
     '</div>' +
     '<div id="rtfc-body">' +
       '<section id="rtfc-transcript-section" class="rtfc-section" aria-labelledby="rtfc-transcript-heading">' +
         '<div class="rtfc-section-header">' +
-          '<div><p class="rtfc-section-kicker">Live capture</p><h2 id="rtfc-transcript-heading">Transcript</h2></div>' +
+          '<div><p class="rtfc-section-kicker">Live transcription</p><h2 id="rtfc-transcript-heading">Transcript</h2></div>' +
           '<button type="button" class="rtfc-section-toggle" id="rtfc-transcript-toggle" aria-label="Collapse transcript" aria-expanded="true" aria-controls="rtfc-transcript-content"><span class="rtfc-chevron" aria-hidden="true"></span></button>' +
         '</div>' +
         '<div id="rtfc-transcript-content">' +
@@ -791,16 +836,16 @@ function panelMarkup() {
         '</div>' +
       '</section>' +
       '<section id="rtfc-claims-section" class="rtfc-section" aria-labelledby="rtfc-claims-heading">' +
-        '<div class="rtfc-section-header"><div><p class="rtfc-section-kicker">Queue</p><h2 id="rtfc-claims-heading">Claims</h2></div></div>' +
-        '<ol id="rtfc-claim-feed"><li class="rtfc-claims-empty">Checkable claims will appear as they are detected.</li></ol>' +
+        '<div class="rtfc-section-header"><div><p class="rtfc-section-kicker">Claim detection</p><h2 id="rtfc-claims-heading">Claims</h2></div></div>' +
+        '<ol id="rtfc-claim-feed"><li class="rtfc-claims-empty"><strong>No claims yet</strong><span>Factual statements will appear here when they are ready to verify.</span></li></ol>' +
       '</section>' +
       '<section id="rtfc-verdicts-section" class="rtfc-section" aria-labelledby="rtfc-verdicts-heading">' +
         '<div class="rtfc-section-header rtfc-verdicts-heading-row">' +
-          '<div><p class="rtfc-section-kicker">Evidence review</p><h2 id="rtfc-verdicts-heading">Verdicts</h2></div>' +
+          '<div><p class="rtfc-section-kicker">Evidence check</p><h2 id="rtfc-verdicts-heading">Verdicts</h2></div>' +
           '<div id="rtfc-speaker-editor" aria-label="Speaker names" hidden></div>' +
         '</div>' +
         '<div id="rtfc-verdicts" role="log" aria-live="polite" aria-relevant="additions text">' +
-          '<div class="rtfc-empty-state"><strong>Listening for factual claims</strong><span>Transcript and evidence states will update here.</span></div>' +
+          '<div class="rtfc-empty-state"><strong>No verdicts yet</strong><span>Evidence-backed results will appear after a claim is checked.</span></div>' +
         '</div>' +
       '</section>' +
     '</div>';
@@ -826,13 +871,13 @@ function installPanelEvents() {
       if (sessionIsLive) {
         target.disabled = true;
         target.setAttribute('aria-busy', 'true');
-        if (sessionStatusEl) sessionStatusEl.textContent = 'Stopping session';
+        if (sessionStatusEl) sessionStatusEl.textContent = 'Stopping analysis…';
         try {
           await sendRuntimeRequest({ type: 'STOP_FACTCHECK', sessionId: activeSessionId });
         } catch (_error) {
           target.disabled = false;
           target.removeAttribute('aria-busy');
-          if (sessionStatusEl) sessionStatusEl.textContent = 'Live session';
+          if (sessionStatusEl) sessionStatusEl.textContent = 'Analysis active';
           showError('InTruth could not confirm that audio capture stopped. Keep this panel open and retry.', {
             persistent: true,
           });
@@ -1046,7 +1091,7 @@ async function stopForOverlayIntegrityFailure(message, options = {}) {
     }
   }
 
-  if (sessionStatusEl) sessionStatusEl.textContent = 'Stopping session';
+  if (sessionStatusEl) sessionStatusEl.textContent = 'Stopping analysis…';
   if (panel?.isConnected) showError(message, { persistent: true });
 
   try {
@@ -1226,13 +1271,13 @@ function finishSession() {
   sessionIsLive = false;
   stopSession();
   panel.dataset.sessionState = 'ended';
-  sessionStatusEl.textContent = 'Session ended';
+  sessionStatusEl.textContent = 'Analysis complete';
   const hasResults = typeof hasExportableSession === 'function' && hasExportableSession();
   const noticeCopy = sessionNoticeEl.querySelector('span');
   if (noticeCopy) {
     noticeCopy.textContent = hasResults
-      ? 'Completed results remain available for HTML export.'
-      : 'No completed claims were available for export.';
+      ? 'Completed results remain available for export.'
+      : 'No completed claims are available to export.';
   }
   sessionNoticeEl.hidden = false;
   panel.querySelector('#rtfc-close')?.setAttribute('aria-label', 'Close InTruth');
@@ -1413,9 +1458,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (status === 'listening' || status === 'backpressure_recovered') {
         panel.querySelector('.rtfc-error-toast')?.remove();
         panel.dataset.sessionState = 'live';
-        sessionStatusEl.textContent = 'Live session';
+        sessionStatusEl.textContent = 'Analysis active';
       } else if (status === 'backpressure') {
-        sessionStatusEl.textContent = 'Processing delay';
+        sessionStatusEl.textContent = 'Processing delayed';
         showError('Audio processing is catching up. The live transcript may be briefly delayed.', { persistent: true });
       }
       break;
