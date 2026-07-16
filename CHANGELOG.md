@@ -11,6 +11,7 @@ All notable changes are documented here. This project uses semantic versions for
 
 ### Changed
 
+- A successful **Start fact-checking** action closes the popup automatically and leaves the live overlay beside the video; startup errors keep the popup open.
 - Extraction selects at most two central statements per window in total, including at most one salient opinion, preferring claims that materially affect the thesis, causal chain, chronology, scale, or accountability.
 - Candidate validation rejects unresolved references, low-information archive fragments, and unnamed events before evidence search, while adjacent target speech may supply a missing subject or date without inventing content.
 - Uncertain names, numbers, negations, and acronyms are suppressed before Serper and verdict spending; extraction output and session request limits are lower.

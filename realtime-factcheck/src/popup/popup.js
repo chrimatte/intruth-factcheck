@@ -681,6 +681,7 @@ async function startFactChecking() {
       captureMayBeActive: true,
       errorMessage: '',
     });
+    window.close();
   } catch (error) {
     transitionTo(UI_STATES.ERROR, {
       errorMessage: error.message || 'The session could not start.',

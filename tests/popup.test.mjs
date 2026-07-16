@@ -214,6 +214,12 @@ function loadPopup({
     runtimeMessages: [],
     createdTabs: [],
     failNextStorageSet: false,
+    windowCloseCount: 0,
+  };
+  const window = {
+    close() {
+      state.windowCloseCount++;
+    },
   };
 
   const chrome = {
@@ -277,6 +283,7 @@ function loadPopup({
     console: { error() {}, warn() {}, log() {} },
     crypto: { randomUUID: () => 'popup-session-id' },
     document,
+    window,
     queueMicrotask,
     setTimeout,
     clearTimeout,
@@ -440,13 +447,14 @@ test('opening the privacy notice saves the current draft before the popup loses 
   );
 });
 
-test('configured home preserves successful start and stop transitions', async () => {
+test('successful start closes the popup while the live session remains active', async () => {
   const popup = loadPopup({ config: completeConfig() });
   await popup.ready();
 
   await popup.element('toggleBtn').click();
   assert.equal(popup.element('buttonLabel').textContent, 'Stop fact-checking');
   assert.equal(popup.element('openSettings').disabled, true);
+  assert.equal(popup.state.windowCloseCount, 1);
   assert.equal(
     popup.state.runtimeMessages.filter(message => message.type === 'START_FACTCHECK').length,
     1
@@ -459,6 +467,27 @@ test('configured home preserves successful start and stop transitions', async ()
     popup.state.runtimeMessages.filter(message => message.type === 'STOP_FACTCHECK').length,
     1
   );
+});
+
+test('failed start keeps the popup open so the error remains visible', async () => {
+  const popup = loadPopup({
+    config: completeConfig(),
+    hooks: {
+      sendMessage(message) {
+        if (message.type === 'GET_STATUS') return { phase: 'IDLE', isCapturing: false };
+        if (message.type === 'START_FACTCHECK') {
+          return { ok: false, error: 'Anthropic rejected the API key.' };
+        }
+        return { ok: true };
+      },
+    },
+  });
+  await popup.ready();
+
+  await popup.element('toggleBtn').click();
+  assert.equal(popup.state.windowCloseCount, 0);
+  assert.equal(popup.element('errorNotice').hidden, false);
+  assert.match(popup.element('errorNotice').textContent, /Anthropic rejected the API key/);
 });
 
 test('unsupported tabs keep the compact home and settings access but disable start', async () => {
